@@ -8,7 +8,6 @@ from typing import Any, Final, Tuple, Literal, Optional
 from pathlib import Path
 from datetime import datetime
 
-import cv2
 import numpy as np
 import gradio as gr
 from openai import AsyncOpenAI
@@ -55,7 +54,6 @@ TEXT_OUTPUT_COST_PER_1M = 16.0
 IMAGE_INPUT_COST_PER_1M = 5.0
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
-
 
 
 class InputTranscriptChunksByItem(BaseModel):
@@ -109,6 +107,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.is_idle_tool_call = False
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
+        self._voice_override: str | None = None
         # Track how the API key was provided (env vs textbox) and its value
         self._key_source: Literal["env", "textbox"] = "env"
         self._provided_api_key: str | None = None
@@ -154,6 +153,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             from reachy_mini_conversation_app.config import set_custom_profile
 
             set_custom_profile(profile)
+            self._voice_override = None
             logger.info(
                 "Set custom profile to %r (config=%r)", profile, getattr(_config, "REACHY_MINI_CUSTOM_PROFILE", None)
             )
@@ -199,6 +199,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         except Exception as e:
             logger.error("Error applying personality '%s': %s", profile, e)
             return f"Failed to apply personality: {e}"
+
+    async def change_voice(self, voice: str) -> str:
+        """Change only the voice and restart the session."""
+        self._voice_override = voice
+        if getattr(self, "client", None) is not None:
+            try:
+                await self._restart_session()
+                return f"Voice changed to {voice}."
+            except Exception as e:
+                logger.warning("Failed to restart session for voice change: %s", e)
+                return "Voice change failed. Will take effect on next connection."
+        return "Voice changed. Will take effect on next connection."
+
+    def get_current_voice(self) -> str:
+        """Return the voice currently selected for this handler."""
+        return self._voice_override or get_session_voice()
 
     async def _emit_debounced_partial(self, transcript: str, item_id: str, sequence_counter: int) -> None:
         """Emit partial transcript after debounce delay."""
@@ -369,7 +385,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             tool_result = bg_tool.result
             logger.info(
                 "Tool '%s' (id=%s) executed successfully.",
-                bg_tool.tool_name, bg_tool.id,
+                bg_tool.tool_name,
+                bg_tool.id,
             )
             logger.debug("Tool '%s' full result: %s", bg_tool.tool_name, tool_result)
         else:
@@ -378,7 +395,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         # Connection may have closed while tool was running
         if not self.connection:
-            logger.warning("Connection closed during tool '%s' (id=%s) execution; cannot send result back", bg_tool.tool_name, bg_tool.id)
+            logger.warning(
+                "Connection closed during tool '%s' (id=%s) execution; cannot send result back",
+                bg_tool.tool_name,
+                bg_tool.id,
+            )
             return
 
         try:
@@ -429,8 +450,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if self.deps.camera_worker is not None:
                     np_img = self.deps.camera_worker.get_latest_frame()
                     if np_img is not None:
-                        # Camera frames are BGR from OpenCV; convert so Gradio displays correct colors.
-                        rgb_frame = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
+                        rgb_frame = np.ascontiguousarray(np_img[..., ::-1])
                     else:
                         rgb_frame = None
                     img = gr.Image(value=rgb_frame)
@@ -473,17 +493,17 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         ),
                         output=RealtimeAudioConfigOutputParam(
                             format=AudioPCM(type="audio/pcm", rate=self.output_sample_rate),
-                            voice=get_session_voice(),
+                            voice=self._voice_override or get_session_voice(),
                         ),
                     ),
-                    tools=get_tool_specs(), # type: ignore[typeddict-item]
+                    tools=get_tool_specs(),  # type: ignore[typeddict-item]
                     tool_choice="auto",
                 )
                 await conn.session.update(session=session_config)
                 logger.info(
                     "Realtime session initialized with profile=%r voice=%r",
                     getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None),
-                    get_session_voice(),
+                    self._voice_override or get_session_voice(),
                 )
                 # If we reached here, the session update succeeded which implies the API key worked.
                 # Persist the key to a newly created .env (copied from .env.example) if needed.
@@ -504,16 +524,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             except Exception:
                 pass
 
-
             response_sender_task: asyncio.Task[None] | None = None
             try:
                 # Start the background tool manager
                 self.tool_manager.start_up(tool_callbacks=[self._handle_tool_result])
 
                 # Start the response sender worker
-                response_sender_task = asyncio.create_task(
-                    self._response_sender_loop(), name="response-sender"
-                )
+                response_sender_task = asyncio.create_task(self._response_sender_loop(), name="response-sender")
 
                 async for event in self.connection:
                     logger.debug(f"OpenAI event: {event.type}")
@@ -530,6 +547,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type == "response.output_audio.done":
+                        if self.deps.head_wobbler is not None:
+                            self.deps.head_wobbler.request_reset_after_current_audio()
                         logger.debug("response completed")
 
                     if event.type == "response.created":
@@ -595,11 +614,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     # Handle assistant transcription
                     if event.type == "response.output_audio_transcript.done":
                         logger.debug(f"Assistant transcript: {event.transcript}")
-                        await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": event.transcript}))
+                        await self.output_queue.put(
+                            AdditionalOutputs({"role": "assistant", "content": event.transcript})
+                        )
 
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
-                        if self.deps.head_wobbler is not None:
+                        if self.gradio_mode and self.deps.head_wobbler is not None:
                             self.deps.head_wobbler.feed(event.delta)
                         self.last_activity_time = asyncio.get_event_loop().time()
                         logger.debug("last activity time updated to %s", self.last_activity_time)
@@ -618,14 +639,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                         logger.info(
                             "Tool call received — tool_name=%r, call_id=%s, is_idle=%s, args=%s",
-                            tool_name, call_id, self.is_idle_tool_call, args_json_str,
+                            tool_name,
+                            call_id,
+                            self.is_idle_tool_call,
+                            args_json_str,
                         )
 
                         if not isinstance(tool_name, str) or not isinstance(args_json_str, str):
                             logger.error(
                                 "Invalid tool call: tool_name=%s (type=%s), args=%s (type=%s), call_id=%s",
-                                tool_name, type(tool_name).__name__,
-                                args_json_str, type(args_json_str).__name__,
+                                tool_name,
+                                type(tool_name).__name__,
+                                args_json_str,
+                                type(args_json_str).__name__,
                                 call_id,
                             )
                             continue
@@ -652,7 +678,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         if self.is_idle_tool_call:
                             self.is_idle_tool_call = False
 
-                        logger.info("Started background tool: %s (id=%s, call_id=%s)", tool_name, bg_tool.tool_id, call_id)
+                        logger.info(
+                            "Started background tool: %s (id=%s, call_id=%s)", tool_name, bg_tool.tool_id, call_id
+                        )
 
                     # server error
                     if event.type == "error":
