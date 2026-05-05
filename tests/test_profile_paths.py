@@ -7,8 +7,12 @@ import pytest
 
 import reachy_mini_conversation_app.config as config_mod
 import reachy_mini_conversation_app.prompts as prompts_mod
+import reachy_mini_conversation_app.headless_personality as headless_mod
 from reachy_mini_conversation_app.config import DEFAULT_PROFILES_DIRECTORY, config
+from reachy_mini_conversation_app.gradio_personality import PersonalityUI
 from reachy_mini_conversation_app.headless_personality import (
+    DEFAULT_OPTION,
+    read_tools_for,
     resolve_profile_dir,
     read_instructions_for,
 )
@@ -81,6 +85,29 @@ def test_prompts_load_from_compact_builtin_profile(monkeypatch: pytest.MonkeyPat
     assert read_instructions_for("mad_scientist_assistant") == expected
 
 
+def test_builtin_default_profile_tools_load_for_ui() -> None:
+    """The UI should read built-in default tools from the packaged default profile."""
+    expected = (DEFAULT_PROFILES_DIRECTORY / "default" / "tools.txt").read_text(encoding="utf-8")
+
+    assert read_tools_for(DEFAULT_OPTION) == expected
+
+
+def test_gradio_personality_ui_prefills_builtin_default_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gradio should show the built-in default profile tools on first render."""
+    monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
+
+    ui = PersonalityUI()
+    ui.create_components()
+
+    expected_tools = read_tools_for(ui.DEFAULT_OPTION)
+    expected_enabled = [
+        line.strip() for line in expected_tools.splitlines() if line.strip() and not line.strip().startswith("#")
+    ]
+
+    assert ui.tools_txt_ta.value == expected_tools
+    assert sorted(ui.available_tools_cg.value) == sorted(expected_enabled)
+
+
 def test_session_voice_defaults_follow_selected_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Session voice should fall back to the active backend default."""
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
@@ -88,6 +115,21 @@ def test_session_voice_defaults_follow_selected_backend(monkeypatch: pytest.Monk
     monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
 
     assert prompts_mod.get_session_voice() == "Kore"
+
+
+def test_headless_profile_write_defaults_voice_at_call_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New headless profiles should use the currently selected backend default voice."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(headless_mod, "_profiles_root", lambda: tmp_path)
+
+    headless_mod._write_profile("runtime_voice_default", "test instructions", "")
+
+    voice_file = tmp_path / "user_personalities" / "runtime_voice_default" / "voice.txt"
+    assert voice_file.read_text(encoding="utf-8") == "Kore\n"
 
 
 def test_packaged_profiles_win_outside_source_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -81,7 +81,7 @@ def test_head_tracker_skips_new_frame_until_timed_out_reply_is_drained(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A timed-out request should not let the next frame block on the worker pipe."""
+    """A timed-out request should reserve the next call for recovery, even if the delayed reply has arrived."""
     _patch_fake_worker(
         monkeypatch,
         tmp_path,
@@ -116,6 +116,7 @@ def test_head_tracker_skips_new_frame_until_timed_out_reply_is_drained(
         assert eye_center is None
         assert roll is None
 
+        time.sleep(0.15)
         blocked_started = time.monotonic()
         eye_center, roll = tracker.get_head_position(frame)
         blocked_elapsed = time.monotonic() - blocked_started
@@ -123,7 +124,7 @@ def test_head_tracker_skips_new_frame_until_timed_out_reply_is_drained(
         assert roll is None
         assert blocked_elapsed < 0.05
 
-        time.sleep(0.15)
+        tracker.request_timeout = 0.2
         eye_center, roll = tracker.get_head_position(frame)
         assert eye_center is not None
         assert np.allclose(eye_center, np.array([2.0, 2.0], dtype=np.float32))
