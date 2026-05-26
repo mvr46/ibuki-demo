@@ -1,0 +1,5 @@
+# Local venvs created by example scripts.
+examples/*/.venv/
+examples/*/__pycache__/
+examples/*/faces.db
+examples/*/t1_output.jpg
