@@ -112,7 +112,7 @@ Some wheels (like PyTorch) are large and require compatible CUDA or CPU buildsâ€
 | Extra | Purpose | Notes |
 |-------|---------|-------|
 | `local_vision` | Run the local VLM (SmolVLM2) through PyTorch/Transformers | GPU recommended. Ensure compatible PyTorch builds for your platform. |
-| `yolo_vision` | YOLOv11n face detection via `ultralytics` and `supervision` | Used as the `yolo` head-tracking backend. Runs on CPU (default). GPU improves performance. |
+| `yolo_vision` | YOLOv11n face detection via `ultralytics` and `supervision` | Used as the `yolo` speaker-focus backend. Runs on CPU (default). GPU improves performance. |
 | `mediapipe_vision` | Lightweight landmark tracking with MediaPipe | Works on CPU. Enables `--head-tracker mediapipe`. |
 | `all_vision` | Convenience alias installing every vision extra | Install when you want the flexibility to experiment with every provider. |
 | `dev` | Developer tooling (`pytest`, `ruff`, `mypy`) | Development-only dependencies. Use `--group dev` with uv or `[dev]` with pip. |
@@ -197,7 +197,7 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--head-tracker {yolo,mediapipe}` | `None` | Select a head-tracking backend when a camera is available. `yolo` uses a local YOLO face detector, `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
+| `--head-tracker {yolo,mediapipe}` | `None` | Select a head-tracking backend when a camera is available. `yolo` uses local YOLO face detection with robot-side spatial-audio speaker focus when `/api/state/doa` is available, falling back to visual-only tracking. `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
 | `--media-backend {auto,default,local,webrtc,no_media}` | `auto` | Select the Reachy Mini SDK media backend. Use `no_media` for headless runs when camera/audio hardware is unavailable. In this app, `no_media` also disables camera, head tracking, and local vision. |
 | `--local-vision` | `False` | Use the local vision model (SmolVLM2) for camera-tool requests instead of the selected realtime backend. Requires `local_vision` extra to be installed. |
@@ -214,7 +214,7 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 # Run with MediaPipe head tracking
 reachy-mini-conversation-app --head-tracker mediapipe
 
-# Run with the YOLO face-detection backend for head tracking
+# Run with YOLO speaker focus: face tracking plus robot-side spatial audio when available
 reachy-mini-conversation-app --head-tracker yolo
 
 # Override the default robot host if reachy-mini.local is not the right target

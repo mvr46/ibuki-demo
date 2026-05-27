@@ -7,11 +7,25 @@ from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 
 import numpy as np
-import torch
-from PIL import Image
 from numpy.typing import NDArray
-from transformers import AutoProcessor, AutoModelForImageTextToText
 from huggingface_hub import snapshot_download
+
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None  # type: ignore[assignment]
+
+try:
+    from PIL import Image
+except ModuleNotFoundError:
+    Image = None  # type: ignore[assignment]
+
+try:
+    from transformers import AutoProcessor, AutoModelForImageTextToText
+except ModuleNotFoundError:
+    AutoProcessor = None  # type: ignore[assignment]
+    AutoModelForImageTextToText = None  # type: ignore[assignment]
 
 from reachy_mini_conversation_app.config import config
 
@@ -92,6 +106,8 @@ class VisionProcessor:
 
     def _determine_device(self) -> str:
         """Choose the execution device from the configured preference."""
+        if torch is None:
+            return "cpu"
         pref = self.vision_config.device_preference
         if pref == "cpu":
             return "cpu"
@@ -106,11 +122,17 @@ class VisionProcessor:
 
     def initialize(self) -> None:
         """Load model and processor onto the selected device."""
+        if torch is None or AutoProcessor is None or Image is None:
+            raise ImportError("To use --local-vision, install the local_vision optional dependencies.")
+
         logger.info("Loading SmolVLM2 model on %s (HF_HOME=%s)", self.device, config.HF_HOME)
         processor = cast(
             _VisionProcessor,
             AutoProcessor.from_pretrained(self.vision_config.model_path),  # type: ignore[no-untyped-call]
         )
+
+        if AutoModelForImageTextToText is None:
+            raise ImportError("To use --local-vision, install the local_vision optional dependencies.")
 
         model_kwargs: dict[str, object] = {
             "dtype": torch.bfloat16 if self.device == "cuda" else torch.float32,

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from reachy_mini_conversation_app.vision.head_tracking import HeadTracker, HeadTrackerResult
+from reachy_mini_conversation_app.vision.head_tracking import HeadTracker, HeadTrackerResult, HeadTrackerTarget
 
 
 logger = logging.getLogger(__name__)
@@ -100,14 +100,18 @@ def _worker_main() -> int:
         command = message[0]
         if command == "close":
             return 0
-        if command != "frame" or len(message) != 3 or not isinstance(message[1], int):
+        if command not in {"frame", "targets"} or len(message) != 3 or not isinstance(message[1], int):
             _send_message(protocol_out, ("error", -1, f"Unknown command: {message!r}"))
             continue
 
         request_id = message[1]
         payload = message[2]
         try:
-            result = tracker.get_head_position(payload)
+            if command == "targets":
+                get_targets = getattr(tracker, "get_head_targets", None)
+                result = get_targets(payload) if callable(get_targets) else []
+            else:
+                result = tracker.get_head_position(payload)
             _send_message(protocol_out, ("result", request_id, result))
         except Exception as exc:
             _send_message(protocol_out, ("error", request_id, repr(exc)))
@@ -124,6 +128,13 @@ def _is_tracker_result(payload: object) -> TypeGuard[HeadTrackerResult]:
     if roll is not None and not isinstance(roll, (float, np.floating)):
         return False
     return True
+
+
+def _is_tracker_targets(payload: object) -> TypeGuard[list[HeadTrackerTarget]]:
+    """Return whether the payload is a list of head tracker targets."""
+    if not isinstance(payload, list):
+        return False
+    return all(isinstance(target, HeadTrackerTarget) for target in payload)
 
 
 class YoloHeadTrackerProcess:
@@ -290,17 +301,14 @@ class YoloHeadTrackerProcess:
             self._timed_out_request_id = None
             return True
 
-    def get_head_position(
-        self,
-        frame: NDArray[np.uint8],
-    ) -> tuple[NDArray[np.float32] | None, float | None]:
-        """Return the detected head position from the child process."""
+    def _request_tracker(self, command: str, frame: NDArray[np.uint8]) -> tuple[str, object] | None:
+        """Send a frame command to the child process and return its response."""
         if self._closed:
-            return None, None
+            return None
 
         if self._process.poll() is not None:
             logger.error("Head tracker process for %s is not alive", self._tracker_name)
-            return None, None
+            return None
 
         request_id: int | None = None
         try:
@@ -317,18 +325,30 @@ class YoloHeadTrackerProcess:
 
                 request_id = self._next_request_id
                 self._next_request_id += 1
-                _send_message(self._stdin, ("frame", request_id, frame))
+                _send_message(self._stdin, (command, request_id, frame))
                 status, payload = self._wait_for_response(request_id, self.request_timeout)
         except TimeoutError as exc:
             if request_id is not None:
                 self._timed_out_request_id = request_id
                 self._recovery_call_pending = True
             logger.warning("Head tracker %s communication timed out: %s", self._tracker_name, exc)
-            return None, None
+            return None
         except Exception as exc:
             logger.error("Head tracker %s communication failed: %s", self._tracker_name, exc)
+            return None
+
+        return status, payload
+
+    def get_head_position(
+        self,
+        frame: NDArray[np.uint8],
+    ) -> tuple[NDArray[np.float32] | None, float | None]:
+        """Return the detected head position from the child process."""
+        response = self._request_tracker("frame", frame)
+        if response is None:
             return None, None
 
+        status, payload = response
         if status == "result":
             if _is_tracker_result(payload):
                 eye_center, roll = payload
@@ -339,6 +359,23 @@ class YoloHeadTrackerProcess:
 
         logger.error("%s head tracker failed to process frame: %s", self._tracker_name, payload)
         return None, None
+
+    def get_head_targets(self, frame: NDArray[np.uint8]) -> list[HeadTrackerTarget]:
+        """Return all detected head targets from the child process."""
+        response = self._request_tracker("targets", frame)
+        if response is None:
+            return []
+
+        status, payload = response
+        if status == "result":
+            if _is_tracker_targets(payload):
+                return payload
+
+            logger.error("%s head tracker returned invalid targets: %r", self._tracker_name, payload)
+            return []
+
+        logger.error("%s head tracker failed to process target frame: %s", self._tracker_name, payload)
+        return []
 
     def close(self) -> None:
         """Stop the child process."""

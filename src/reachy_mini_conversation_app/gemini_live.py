@@ -198,6 +198,16 @@ class GeminiLiveHandler(ConversationHandler):
             return
         self._listening_state = listening
         self.deps.movement_manager.set_listening(listening)
+        self._notify_camera_worker("notify_user_speech_started" if listening else "notify_user_speech_stopped")
+
+    def _notify_camera_worker(self, method_name: str) -> None:
+        """Best-effort notification for camera-owned speaker tracking state."""
+        camera_worker = getattr(self.deps, "camera_worker", None)
+        if camera_worker is None:
+            return
+        method = getattr(camera_worker, method_name, None)
+        if callable(method):
+            method()
 
     async def _flush_transcript_chunks(self, role: str, chunks: list[str]) -> None:
         """Emit one finalized transcript message for the current turn."""
@@ -209,12 +219,15 @@ class GeminiLiveHandler(ConversationHandler):
         if not transcript:
             return
 
+        if role == "user":
+            self._notify_camera_worker("notify_user_transcript")
         await self.output_queue.put(AdditionalOutputs({"role": role, "content": transcript}))
 
     async def _mark_model_response_started(self) -> None:
         """Switch out of user-listening mode when the model begins responding."""
         await self._flush_transcript_chunks("user", self._pending_user_transcript_chunks)
         self._set_listening_state(False)
+        self._notify_camera_worker("notify_assistant_audio_started")
 
     async def _handle_interruption(self) -> None:
         """Stop current playback and preserve any transcript already spoken."""
@@ -232,6 +245,7 @@ class GeminiLiveHandler(ConversationHandler):
         await self._flush_transcript_chunks("user", self._pending_user_transcript_chunks)
         await self._flush_transcript_chunks("assistant", self._pending_assistant_transcript_chunks)
         self._set_listening_state(False)
+        self._notify_camera_worker("notify_assistant_audio_done")
         if self.deps.head_wobbler is not None:
             self.deps.head_wobbler.request_reset_after_current_audio()
 
@@ -618,6 +632,7 @@ class GeminiLiveHandler(ConversationHandler):
                                     transcript = content.input_transcription.text
                                     logger.debug("User transcript chunk: %s", transcript)
                                     self._pending_user_transcript_chunks.append(transcript)
+                                    self._notify_camera_worker("notify_user_partial")
                                     self._set_listening_state(True)
 
                                 # Handle output transcription (model speech)

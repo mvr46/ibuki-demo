@@ -13,6 +13,7 @@ from textwrap import dedent
 import numpy as np
 import pytest
 
+from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 from reachy_mini_conversation_app.vision.head_tracking.yolo_process import YoloHeadTrackerProcess
 
 
@@ -170,6 +171,66 @@ def test_head_tracker_accepts_numpy_floating_roll_values(
         assert eye_center is not None
         assert np.allclose(eye_center, np.array([0.25, -0.5], dtype=np.float32))
         assert roll == pytest.approx(0.75)
+    finally:
+        tracker.close()
+
+
+def test_head_tracker_targets_skip_new_frame_until_timed_out_reply_is_drained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Target-list requests should use the same timeout recovery as classic tracking."""
+    _patch_fake_worker(
+        monkeypatch,
+        tmp_path,
+        """
+        from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
+
+        _send_message(("ready", None))
+        call_count = 0
+
+        while True:
+            try:
+                message = _receive_message()
+            except EOFError:
+                raise SystemExit(0)
+
+            if message[0] == "close":
+                raise SystemExit(0)
+
+            request_id = message[1]
+            call_count += 1
+            if call_count == 1:
+                time.sleep(0.05)
+
+            target = HeadTrackerTarget(
+                x_offset=float(call_count) / 10.0,
+                y_offset=0.0,
+                confidence=0.9,
+                bbox=(0.4, 0.3, 0.2, 0.2),
+                frame_size=(640, 480),
+            )
+            _send_message(("result", request_id, [target]))
+        """,
+    )
+
+    tracker = YoloHeadTrackerProcess(request_timeout=0.01)
+    try:
+        frame = np.zeros((1024, 1024, 3), dtype=np.uint8)
+
+        assert tracker.get_head_targets(frame) == []
+
+        time.sleep(0.15)
+        blocked_started = time.monotonic()
+        assert tracker.get_head_targets(frame) == []
+        blocked_elapsed = time.monotonic() - blocked_started
+        assert blocked_elapsed < 0.05
+
+        tracker.request_timeout = 0.2
+        targets = tracker.get_head_targets(frame)
+        assert len(targets) == 1
+        assert isinstance(targets[0], HeadTrackerTarget)
+        assert targets[0].x_offset == pytest.approx(0.2)
     finally:
         tracker.close()
 

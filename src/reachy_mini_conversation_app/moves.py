@@ -193,6 +193,7 @@ class MovementState:
         0.0,
         0.0,
     )
+    tracking_body_yaw_offset: float = 0.0
 
     # Status flags
     last_primary_pose: FullBodyPose | None = None
@@ -575,6 +576,7 @@ class MovementManager:
             self.state.speech_offsets[3] + self.state.face_tracking_offsets[3],
             self.state.speech_offsets[4] + self.state.face_tracking_offsets[4],
             self.state.speech_offsets[5] + self.state.face_tracking_offsets[5],
+            self.state.tracking_body_yaw_offset,
         )
 
         # Skip expensive create_head_pose if offsets unchanged since last tick
@@ -592,7 +594,7 @@ class MovementManager:
             mm=False,
         )
         self._cached_secondary_offsets = current_offsets
-        self._cached_secondary_pose = (secondary_head_pose, (0.0, 0.0), 0.0)
+        self._cached_secondary_pose = (secondary_head_pose, (0.0, 0.0), current_offsets[6])
         return self._cached_secondary_pose
 
     def _compose_full_body_pose(self, current_time: float) -> FullBodyPose:
@@ -723,9 +725,14 @@ class MovementManager:
             # Get face tracking offsets from camera worker thread
             offsets = self.camera_worker.get_face_tracking_offsets()
             self.state.face_tracking_offsets = offsets
+            get_tracking_body_yaw_offset = getattr(self.camera_worker, "get_tracking_body_yaw_offset", None)
+            self.state.tracking_body_yaw_offset = (
+                float(get_tracking_body_yaw_offset()) if callable(get_tracking_body_yaw_offset) else 0.0
+            )
         else:
             # No camera worker, use neutral offsets
             self.state.face_tracking_offsets = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            self.state.tracking_body_yaw_offset = 0.0
 
     def start(self) -> None:
         """Start the worker thread that drives the 100 Hz control loop."""

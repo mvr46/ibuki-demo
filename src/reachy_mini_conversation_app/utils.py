@@ -133,7 +133,12 @@ def initialize_camera_and_vision(
                     "To use --local-vision, please install the extra dependencies: pip install '.[local_vision]'",
                 ) from e
 
-            vision_processor = initialize_vision_processor()
+            try:
+                vision_processor = initialize_vision_processor()
+            except ImportError as e:
+                raise CameraVisionInitializationError(
+                    "To use --local-vision, please install the extra dependencies: pip install '.[local_vision]'",
+                ) from e
         else:
             logging.getLogger(__name__).info(
                 "Using the selected realtime backend for vision (default). Use --local-vision for local processing.",

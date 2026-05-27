@@ -165,6 +165,15 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
 
+    def _notify_camera_worker(self, method_name: str) -> None:
+        """Best-effort notification for camera-owned speaker tracking state."""
+        camera_worker = getattr(self.deps, "camera_worker", None)
+        if camera_worker is None:
+            return
+        method = getattr(camera_worker, method_name, None)
+        if callable(method):
+            method()
+
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
         """Remove bulky transport-only fields before echoing tool output back to the model."""
@@ -700,6 +709,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     logger.debug("Realtime event: %s", event.type)
                     if event.type == "input_audio_buffer.speech_started":
                         self._mark_activity("user_speech_started")
+                        self._notify_camera_worker("notify_user_speech_started")
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
@@ -712,10 +722,12 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                     if event.type == "input_audio_buffer.speech_stopped":
                         self._mark_activity("user_speech_stopped")
+                        self._notify_camera_worker("notify_user_speech_stopped")
                         self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type == "response.output_audio.done":
+                        self._notify_camera_worker("notify_assistant_audio_done")
                         if self.deps.head_wobbler is not None:
                             self.deps.head_wobbler.request_reset_after_current_audio()
                         logger.debug("response completed")
@@ -748,6 +760,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                     if event.type == "conversation.item.input_audio_transcription.delta":
                         self._mark_activity("user_transcription_delta")
+                        self._notify_camera_worker("notify_user_partial")
                         logger.debug(f"User partial transcript: {event.delta}")
 
                         item_id = event.item_id
@@ -792,6 +805,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                             logger.debug("Ignoring empty user transcript")
                             continue
 
+                        self._notify_camera_worker("notify_user_transcript")
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
@@ -808,6 +822,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
+                        self._notify_camera_worker("notify_assistant_audio_started")
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         if self.gradio_mode and self.deps.head_wobbler is not None:
