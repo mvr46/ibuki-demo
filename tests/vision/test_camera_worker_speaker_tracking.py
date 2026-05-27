@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from reachy_mini_conversation_app.camera_worker import CameraWorker
+from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 from reachy_mini_conversation_app.vision.head_tracking.speaker import SoundOrientationController, target_from_doa
 
@@ -291,6 +292,40 @@ def test_camera_worker_falls_back_to_visual_selection_without_doa() -> None:
     assert robot.look_at_calls
     assert robot.look_at_calls[-1][0] < 320
     assert worker.get_tracking_body_yaw_offset() == pytest.approx(0.0)
+
+
+def test_camera_worker_prefers_named_focus_from_identity_snapshot() -> None:
+    """Camera worker should bias speaker selection toward a requested visible name."""
+    now = time.monotonic()
+    robot = _FakeRobot()
+    unknown = _target(-0.5, 0.98)
+    alice = _target(0.5, 0.55)
+    worker = CameraWorker(
+        robot,
+        _FakeTracker([unknown, alice]),
+        doa_poller=_FakePoller(None, None),
+    )
+    worker.set_speaker_focus_name("Alice")
+    worker.set_face_identity_worker(
+        SimpleNamespace(
+            snapshot=lambda: SimpleNamespace(
+                visible=(
+                    IdentifiedTarget(
+                        target=alice,
+                        name="Alice",
+                        similarity=0.86,
+                        embedding=np.array([1.0, 0.0], dtype=np.float32),
+                    ),
+                )
+            )
+        )
+    )
+
+    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
+
+    assert robot.look_at_calls
+    assert robot.look_at_calls[-1][0] > 320
+    assert worker._speaker_selection_state.last_x_offset == pytest.approx(0.5)
 
 
 def test_camera_worker_returns_head_and_body_offsets_to_neutral_after_loss() -> None:

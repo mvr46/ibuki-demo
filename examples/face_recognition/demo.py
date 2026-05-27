@@ -7,20 +7,20 @@ all-to-all face similarity matrix.
 First run downloads the `buffalo_l` model pack (~326 MB) into
 ``~/.insightface/models/`` automatically. Subsequent runs use the cache.
 """
-from __future__ import annotations
 
+from __future__ import annotations
 import sys
 import time
 
 import cv2
 import numpy as np
-
 import insightface
 from insightface.app import FaceAnalysis
 from insightface.data import get_image as ins_get_image
 
 
 def main() -> int:
+    """Run the bundled InsightFace smoke test and write an annotated image."""
     print(f"insightface version: {insightface.__version__}")
     print("Loading FaceAnalysis (CPU). First run downloads ~326 MB...")
 

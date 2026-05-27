@@ -174,6 +174,16 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         if callable(method):
             method()
 
+    def _notify_speaker_attribution_worker(self, method_name: str, *args: Any) -> Any:
+        """Best-effort notification for multimodal speaker attribution state."""
+        speaker_worker = getattr(self.deps, "speaker_attribution_worker", None)
+        if speaker_worker is None:
+            return None
+        method = getattr(speaker_worker, method_name, None)
+        if callable(method):
+            return method(*args)
+        return None
+
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
         """Remove bulky transport-only fields before echoing tool output back to the model."""
@@ -698,18 +708,31 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                 pass
 
             response_sender_task: asyncio.Task[None] | None = None
+            perception_task: asyncio.Task[None] | None = None
             try:
                 # Start the background tool manager
                 self.tool_manager.start_up(tool_callbacks=[self._handle_tool_result])
 
                 # Start the response sender worker
                 response_sender_task = asyncio.create_task(self._response_sender_loop(), name="response-sender")
+                if self.deps.face_identity_worker is not None or self.deps.speaker_attribution_worker is not None:
+                    from reachy_mini_conversation_app.perception_stream import run_perception_stream
+
+                    perception_task = asyncio.create_task(
+                        run_perception_stream(
+                            self.deps.face_identity_worker,
+                            self,
+                            speaker_attribution_worker=self.deps.speaker_attribution_worker,
+                        ),
+                        name="perception-stream",
+                    )
 
                 async for event in self.connection:
                     logger.debug("Realtime event: %s", event.type)
                     if event.type == "input_audio_buffer.speech_started":
                         self._mark_activity("user_speech_started")
                         self._notify_camera_worker("notify_user_speech_started")
+                        self._notify_speaker_attribution_worker("notify_user_speech_started")
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
@@ -723,11 +746,13 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     if event.type == "input_audio_buffer.speech_stopped":
                         self._mark_activity("user_speech_stopped")
                         self._notify_camera_worker("notify_user_speech_stopped")
+                        self._notify_speaker_attribution_worker("notify_user_speech_stopped")
                         self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type == "response.output_audio.done":
                         self._notify_camera_worker("notify_assistant_audio_done")
+                        self._notify_speaker_attribution_worker("notify_assistant_audio_done")
                         if self.deps.head_wobbler is not None:
                             self.deps.head_wobbler.request_reset_after_current_audio()
                         logger.debug("response completed")
@@ -761,6 +786,10 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     if event.type == "conversation.item.input_audio_transcription.delta":
                         self._mark_activity("user_transcription_delta")
                         self._notify_camera_worker("notify_user_partial")
+                        self._notify_speaker_attribution_worker(
+                            "notify_user_partial",
+                            getattr(event, "delta", "") or "",
+                        )
                         logger.debug(f"User partial transcript: {event.delta}")
 
                         item_id = event.item_id
@@ -806,6 +835,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                             continue
 
                         self._notify_camera_worker("notify_user_transcript")
+                        self._notify_speaker_attribution_worker("notify_user_transcript", transcript)
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
@@ -823,6 +853,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
                         self._notify_camera_worker("notify_assistant_audio_started")
+                        self._notify_speaker_attribution_worker("notify_assistant_audio_started")
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         if self.gradio_mode and self.deps.head_wobbler is not None:
@@ -917,6 +948,12 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     response_sender_task.cancel()
                     try:
                         await response_sender_task
+                    except asyncio.CancelledError:
+                        pass
+                if perception_task is not None:
+                    perception_task.cancel()
+                    try:
+                        await perception_task
                     except asyncio.CancelledError:
                         pass
 
@@ -1035,19 +1072,25 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         logger.debug("Sending idle signal")
         self.is_idle_tool_call = True
         timestamp_msg = f"[Idle time update: {self.format_timestamp()} - No activity for {idle_duration:.1f}s] You've been idle for a while. Feel free to get creative - dance, show an emotion, look around, call idle_do_nothing to stay still and silent, or just be yourself!"
-        if not self.connection:
-            logger.debug("No connection, cannot send idle signal")
-            return
-        await self.connection.conversation.item.create(
-            item={
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": timestamp_msg}],
-            },
-        )
+        await self.inject_environment_message(timestamp_msg)
         await self._safe_response_create(
             response=RealtimeResponseCreateParamsParam(
                 instructions="You MUST respond with function calls only - no speech or text. Choose appropriate actions for idle behavior. Use idle_do_nothing only if you intentionally want no movement or sound during this idle turn.",
                 tool_choice="required",
             ),
         )
+
+    async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
+        """Inject an ambient user-role environment message into the realtime conversation."""
+        if not self.connection:
+            logger.debug("No connection, cannot inject environment message")
+            return
+        await self.connection.conversation.item.create(
+            item={
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        )
+        if trigger_response:
+            await self._safe_response_create()

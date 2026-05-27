@@ -55,6 +55,9 @@ class ToolDependencies:
     movement_manager: Any  # MovementManager from moves.py
     # Optional deps
     camera_worker: Any | None = None  # CameraWorker for frame buffering
+    face_identity_worker: Any | None = None
+    spatial_audio_source: Any | None = None
+    speaker_attribution_worker: Any | None = None
     vision_processor: Any | None = None
     head_wobbler: Any | None = None  # HeadWobbler for audio-reactive motion
     motion_duration_s: float = 1.0
@@ -287,6 +290,10 @@ def get_active_tool_specs(deps: ToolDependencies) -> list[Dict[str, Any]]:
     exclusion_list: list[str] = []
     if not (deps.camera_worker and deps.camera_worker.head_tracker):
         exclusion_list.append("head_tracking")
+    if deps.face_identity_worker is None:
+        exclusion_list.extend(["who_is_here", "remember_person", "look_at_person"])
+    if deps.camera_worker is None:
+        exclusion_list.append("look_at_person")
     return get_tool_specs(exclusion_list)
 
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 import math
 
+import numpy as np
 import pytest
 
+from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 from reachy_mini_conversation_app.vision.head_tracking.speaker import (
     SpeakerSelectionState,
@@ -111,3 +113,26 @@ def test_select_speaker_uses_continuity_to_stabilize_ties() -> None:
 
     assert selected.target is not None
     assert selected.target.x_offset == pytest.approx(-0.2)
+
+
+def test_select_speaker_prefers_requested_named_person() -> None:
+    """A requested identity should beat a louder visible unknown speaker."""
+    alice = _target(-0.7, confidence=0.9)
+    unknown = _target(0.7, confidence=0.9)
+
+    selected = select_speaker(
+        [alice, unknown],
+        audio_x_offset=0.7,
+        prefer_name="alice",
+        identity_targets=[
+            IdentifiedTarget(
+                target=alice,
+                name="Alice",
+                similarity=0.9,
+                embedding=np.array([1.0, 0.0], dtype=np.float32),
+            )
+        ],
+    )
+
+    assert selected.target is alice
+    assert selected.name_match is True

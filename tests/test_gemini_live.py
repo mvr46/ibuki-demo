@@ -14,6 +14,7 @@ import reachy_mini_conversation_app.gemini_live as gemini_mod
 import reachy_mini_conversation_app.tools.core_tools as ct_mod
 from reachy_mini_conversation_app.gemini_live import GeminiLiveHandler
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
+from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.tool_constants import ToolState
 from reachy_mini_conversation_app.tools.background_tool_manager import ToolNotification
 
@@ -182,6 +183,53 @@ async def test_gemini_turn_buffers_transcripts_and_schedules_motion_reset(
     head_wobbler.feed.assert_not_called()
     head_wobbler.request_reset_after_current_audio.assert_called_once()
     head_wobbler.reset.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gemini_turn_completion_injects_speech_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini turn completion should create and inject one attributed speech message."""
+    monkeypatch.setattr(gemini_mod, "get_session_instructions", lambda: "test")
+    monkeypatch.setattr(gemini_mod, "get_session_voice", lambda: "Kore")
+    monkeypatch.setattr(gemini_mod, "get_active_tool_specs", lambda _: [])
+
+    movement_manager = MagicMock()
+    movement_manager.is_idle.return_value = False
+    speaker_worker = SpeakerAttributionWorker(time_origin_s=0.0)
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=movement_manager,
+        speaker_attribution_worker=speaker_worker,
+    )
+    handler = GeminiLiveHandler(deps)
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    session = _FakeSession(
+        batches=[
+            [
+                _response(_server_content(input_transcription=SimpleNamespace(text="Can you hear me?"))),
+                _response(_server_content(turn_complete=True)),
+            ]
+        ],
+        stop_event=handler._stop_event,
+    )
+    handler.client = _FakeLiveClient(session)
+
+    task = asyncio.create_task(handler._run_live_session())
+    await _wait_for(
+        lambda: any(item.get("text", "").startswith("[Speech attribution:") for item in session.realtime_inputs),
+        timeout=2.0,
+    )
+
+    handler._stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    speech_messages = [
+        item["text"] for item in session.realtime_inputs if item.get("text", "").startswith("[Speech attribution:")
+    ]
+    assert len(speech_messages) == 1
+    assert 'transcript="Can you hear me?"' in speech_messages[0]
+    assert len(speaker_worker.snapshot()) == 1
 
 
 @pytest.mark.asyncio

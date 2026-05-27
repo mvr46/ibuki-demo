@@ -105,6 +105,7 @@ def _install_network_media_host_fallback() -> None:
             from reachy_mini.media.webrtc_utils import get_producer_list
 
             if self.connection_mode == "network":
+
                 class RemoteWebRTCAudioDoA:
                     def get_DoA(self) -> None:
                         return None
@@ -135,8 +136,8 @@ def _install_network_media_host_fallback() -> None:
             daemon_url=self._daemon_http_url,
         )
 
-    ReachyMini._configure_mediamanager = _configure_mediamanager_with_host_fallback  # type: ignore[method-assign]
-    ReachyMini._conversation_app_media_host_fallback = True  # type: ignore[attr-defined]
+    ReachyMini._configure_mediamanager = _configure_mediamanager_with_host_fallback
+    ReachyMini._conversation_app_media_host_fallback = True
 
 
 def main() -> None:
@@ -276,8 +277,17 @@ def run(
         logger.info("Simulation mode detected. Automatically enabling gradio flag.")
         args.gradio = True
 
+    from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
+    from reachy_mini_conversation_app.vision.head_tracking.speaker import build_daemon_spatial_audio_source
+
+    spatial_audio_source = build_daemon_spatial_audio_source(robot)
+
     try:
-        camera_worker, vision_processor = initialize_camera_and_vision(args, robot)
+        camera_worker, vision_processor = initialize_camera_and_vision(
+            args,
+            robot,
+            spatial_audio_source=spatial_audio_source,
+        )
     except CameraVisionInitializationError as e:
         logger.error("Failed to initialize camera/vision: %s", e)
         sys.exit(1)
@@ -289,10 +299,34 @@ def run(
 
     head_wobbler = HeadWobbler(set_speech_offsets=movement_manager.set_speech_offsets)
 
+    face_identity_worker = None
+    if camera_worker is not None and getattr(camera_worker, "head_tracker", None) is not None:
+        try:
+            from reachy_mini_conversation_app.face_identity_worker import FaceIdentifierWorker
+            from reachy_mini_conversation_app.vision.face_identity import build_default_face_identity_service
+
+            face_identity_service = build_default_face_identity_service()
+            face_identity_worker = FaceIdentifierWorker(camera_worker, face_identity_service.identifier)
+            set_face_identity_worker = getattr(camera_worker, "set_face_identity_worker", None)
+            if callable(set_face_identity_worker):
+                set_face_identity_worker(face_identity_worker)
+            logger.info("Face recognition worker initialized")
+        except Exception as e:
+            logger.warning("Face recognition worker unavailable: %s", e)
+
+    speaker_attribution_worker = SpeakerAttributionWorker(
+        spatial_audio_source=spatial_audio_source,
+        face_identity_worker=face_identity_worker,
+        assistant_state_source=camera_worker,
+    )
+
     deps = ToolDependencies(
         reachy_mini=robot,
         movement_manager=movement_manager,
         camera_worker=camera_worker,
+        face_identity_worker=face_identity_worker,
+        spatial_audio_source=spatial_audio_source,
+        speaker_attribution_worker=speaker_attribution_worker,
         vision_processor=vision_processor,
         head_wobbler=head_wobbler,
     )
@@ -407,6 +441,12 @@ def run(
     head_wobbler.start()
     if camera_worker:
         camera_worker.start()
+    elif spatial_audio_source:
+        spatial_audio_start = getattr(spatial_audio_source, "start", None)
+        if callable(spatial_audio_start):
+            spatial_audio_start()
+    if face_identity_worker:
+        face_identity_worker.start()
 
     def poll_stop_event() -> None:
         """Poll the stop event to allow graceful shutdown."""
@@ -429,8 +469,14 @@ def run(
     finally:
         movement_manager.stop()
         head_wobbler.stop()
+        if face_identity_worker:
+            face_identity_worker.stop()
         if camera_worker:
             camera_worker.stop()
+        elif spatial_audio_source:
+            spatial_audio_stop = getattr(spatial_audio_source, "stop", None)
+            if callable(spatial_audio_stop):
+                spatial_audio_stop()
 
         # Ensure media is explicitly closed before disconnecting
         try:

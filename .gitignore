@@ -1,5 +1,9 @@
 # Local venvs created by example scripts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
 examples/*/.venv/
 examples/*/__pycache__/
 examples/*/faces.db
 examples/*/t1_output.jpg
+dashboard/node_modules/

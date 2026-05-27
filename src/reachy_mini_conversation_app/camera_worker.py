@@ -15,9 +15,11 @@ from reachy_mini_conversation_app.vision.head_tracking import HeadTracker, HeadT
 from reachy_mini_conversation_app.vision.head_tracking.speaker import (
     SoundTarget,
     DaemonDoAPoller,
+    SpatialAudioSource,
     SpeakerSelectionState,
     SoundOrientationController,
     select_speaker,
+    build_daemon_spatial_audio_source,
 )
 
 
@@ -46,6 +48,7 @@ class CameraWorker:
         reachy_mini: ReachyMini,
         head_tracker: HeadTracker | None = None,
         doa_poller: DaemonDoAPoller | None = None,
+        spatial_audio_source: SpatialAudioSource | None = None,
     ) -> None:
         """Initialize."""
         self.reachy_mini = reachy_mini
@@ -83,9 +86,18 @@ class CameraWorker:
         self._sound_search_target: SoundTarget | None = None
         self._sound_search_started_at: float | None = None
         self._sound_search_last_seen_at: float | None = None
+        self._speaker_focus_name: str | None = None
+        self._speaker_focus_lock = threading.Lock()
+        self._face_identity_worker: object | None = None
         self._last_sound_debug_at = 0.0
         self._last_sound_debug_key: tuple[str, str] | None = None
-        self._doa_poller = doa_poller if doa_poller is not None else self._build_doa_poller()
+        self._spatial_audio_source: SpatialAudioSource | None
+        if spatial_audio_source is not None:
+            self._spatial_audio_source = spatial_audio_source
+        elif doa_poller is not None:
+            self._spatial_audio_source = doa_poller
+        else:
+            self._spatial_audio_source = self._build_doa_poller()
 
         self._speech_state_lock = threading.Lock()
         self._user_speech_active = False
@@ -159,11 +171,30 @@ class CameraWorker:
         self.is_head_tracking_enabled = enabled
         logger.info(f"Head tracking {'enabled' if enabled else 'disabled'}")
 
+    def set_face_identity_worker(self, face_identity_worker: object | None) -> None:
+        """Attach the face identity worker used for named speaker preference."""
+        self._face_identity_worker = face_identity_worker
+
+    def set_speaker_focus_name(self, name: str | None) -> None:
+        """Prefer a visible named person during speaker selection."""
+        cleaned_name = None if name is None else name.strip()
+        with self._speaker_focus_lock:
+            self._speaker_focus_name = cleaned_name or None
+        if cleaned_name:
+            logger.info("Speaker focus name set to %s", cleaned_name)
+        else:
+            logger.info("Speaker focus name cleared")
+
+    def get_speaker_focus_name(self) -> str | None:
+        """Return the currently preferred speaker name."""
+        with self._speaker_focus_lock:
+            return self._speaker_focus_name
+
     def start(self) -> None:
         """Start the camera worker loop in a thread."""
         self._stop_event.clear()
-        if self._doa_poller is not None:
-            doa_start = getattr(self._doa_poller, "start", None)
+        if self._spatial_audio_source is not None:
+            doa_start = getattr(self._spatial_audio_source, "start", None)
             if callable(doa_start):
                 doa_start()
         self._thread = threading.Thread(target=self.working_loop, daemon=True)
@@ -175,8 +206,8 @@ class CameraWorker:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join()
-        if self._doa_poller is not None:
-            doa_stop = getattr(self._doa_poller, "stop", None)
+        if self._spatial_audio_source is not None:
+            doa_stop = getattr(self._spatial_audio_source, "stop", None)
             if callable(doa_stop):
                 doa_stop()
         head_tracker_close = getattr(self.head_tracker, "close", None)
@@ -185,20 +216,16 @@ class CameraWorker:
 
         logger.debug("Camera worker stopped")
 
+    @property
+    def spatial_audio_source(self) -> SpatialAudioSource | None:
+        """Return the shared spatial-audio source used by camera speaker tracking."""
+        return self._spatial_audio_source
+
     def _build_doa_poller(self) -> DaemonDoAPoller | None:
         """Create the robot-side DoA poller when the tracker can use target lists."""
         if not self._supports_spatial_speaker_tracking():
             return None
-        client = getattr(self.reachy_mini, "client", None)
-        host = getattr(client, "host", None) or getattr(self.reachy_mini, "host", None)
-        port = getattr(client, "port", None) or getattr(self.reachy_mini, "port", None)
-        if not host or port is None:
-            return None
-        try:
-            return DaemonDoAPoller(str(host), int(port))
-        except Exception as exc:
-            logger.debug("Skipping robot DoA poller setup: %s", exc)
-            return None
+        return build_daemon_spatial_audio_source(self.reachy_mini)
 
     def _supports_spatial_speaker_tracking(self) -> bool:
         """Return whether the active tracker can provide all visible targets."""
@@ -206,9 +233,9 @@ class CameraWorker:
 
     def _fresh_sound_target(self, current_time: float) -> SoundTarget | None:
         """Return a fresh DoA target gated by speech state."""
-        if self._doa_poller is None:
+        if self._spatial_audio_source is None:
             return None
-        target, target_at = self._doa_poller.get_latest()
+        target, target_at = self._spatial_audio_source.get_latest()
         if target is None or target_at is None or current_time - target_at > DOA_FRESH_SECONDS:
             return None
 
@@ -258,7 +285,10 @@ class CameraWorker:
         """Log a throttled trace for side-sound speaker-search decisions."""
         direction = self._sound_direction_label(target)
         key = (event, direction)
-        if key == self._last_sound_debug_key and current_time - self._last_sound_debug_at < SOUND_DEBUG_LOG_INTERVAL_SECONDS:
+        if (
+            key == self._last_sound_debug_key
+            and current_time - self._last_sound_debug_at < SOUND_DEBUG_LOG_INTERVAL_SECONDS
+        ):
             return
 
         self._last_sound_debug_key = key
@@ -346,6 +376,19 @@ class CameraWorker:
             logger.error("Head target detection failed: %s", exc)
             return []
         return [target for target in targets if isinstance(target, HeadTrackerTarget)]
+
+    def _identity_targets(self) -> list[object]:
+        """Return latest identity-enriched visible targets, if available."""
+        if self._face_identity_worker is None:
+            return []
+        snapshot = getattr(self._face_identity_worker, "snapshot", None)
+        if not callable(snapshot):
+            return []
+        try:
+            return list(snapshot().visible)
+        except Exception as exc:
+            logger.debug("Face identity snapshot unavailable for speaker selection: %s", exc)
+            return []
 
     def _speaker_focus_pixels(self, target: HeadTrackerTarget) -> tuple[int, int]:
         """Return a subtle image point for speaker focus."""
@@ -548,6 +591,8 @@ class CameraWorker:
                     else None
                 ),
                 state=self._speaker_selection_state,
+                prefer_name=self.get_speaker_focus_name(),
+                identity_targets=self._identity_targets(),
             ).target
             if selected is not None:
                 self._lock_visual_speaker(selected, current_time)

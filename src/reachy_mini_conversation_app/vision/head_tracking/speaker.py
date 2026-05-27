@@ -6,11 +6,16 @@ import math
 import time
 import logging
 import threading
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
+from collections import deque
 from dataclasses import dataclass
 from urllib.request import urlopen
 
+import numpy as np
+from numpy.typing import NDArray
+
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
+from reachy_mini_conversation_app.vision.face_recognition_lib import IOU_SAME_FACE, iou
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +28,29 @@ class SoundTarget:
     angle: float
     x_offset: float
     speech_detected: bool
+
+
+@dataclass(frozen=True)
+class SpatialAudioSample:
+    """One timestamped direction-of-arrival sample."""
+
+    timestamp: float
+    angle: float
+    x_offset: float
+    azimuth_deg: float
+    speech_detected: bool
+
+
+class SpatialAudioSource(Protocol):
+    """Shared source of recent robot spatial-audio samples."""
+
+    def get_latest(self) -> tuple[SoundTarget | None, float | None]:
+        """Return the latest target and monotonic timestamp."""
+        ...
+
+    def window(self, start_s: float, end_s: float) -> tuple[SpatialAudioSample, ...]:
+        """Return samples whose timestamps fall inside a monotonic-time window."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -129,6 +157,7 @@ class SpeakerSelectionConfig:
     audio_weight: float = 0.55
     visual_weight: float = 0.30
     continuity_weight: float = 0.15
+    name_match_bonus: float = 0.75
 
 
 @dataclass
@@ -150,6 +179,7 @@ class SpeakerSelectionResult:
     audio_agreement: float
     visual_confidence: float
     temporal_continuity: float
+    name_match: bool = False
 
 
 def select_speaker(
@@ -158,28 +188,32 @@ def select_speaker(
     audio_x_offset: float | None,
     state: SpeakerSelectionState | None = None,
     config: SpeakerSelectionConfig = SpeakerSelectionConfig(),
+    prefer_name: str | None = None,
+    identity_targets: list[object] | None = None,
 ) -> SpeakerSelectionResult:
     """Select the likely active speaker from visible face targets and audio."""
-    candidates: list[tuple[float, int, HeadTrackerTarget, float, float, float]] = []
+    candidates: list[tuple[float, int, HeadTrackerTarget, float, float, float, bool]] = []
     for index, target in enumerate(targets):
         audio_agreement = _audio_agreement(target.x_offset, audio_x_offset)
         visual_confidence = _clamp_score(target.confidence)
         continuity = _temporal_continuity(target.x_offset, state)
+        name_match = _target_matches_name(target, prefer_name, identity_targets)
         score = (
             audio_agreement * config.audio_weight
             + visual_confidence * config.visual_weight
             + continuity * config.continuity_weight
+            + (config.name_match_bonus if name_match else 0.0)
         )
-        candidates.append((score, index, target, audio_agreement, visual_confidence, continuity))
+        candidates.append((score, index, target, audio_agreement, visual_confidence, continuity, name_match))
 
     if not candidates:
         return SpeakerSelectionResult(None, 0.0, 0.0, 0.0)
 
     candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
-    _, _, selected, audio_agreement, visual_confidence, continuity = candidates[0]
+    _, _, selected, audio_agreement, visual_confidence, continuity, name_match = candidates[0]
     if state is not None:
         state.remember(selected)
-    return SpeakerSelectionResult(selected, audio_agreement, visual_confidence, continuity)
+    return SpeakerSelectionResult(selected, audio_agreement, visual_confidence, continuity, name_match)
 
 
 class DaemonDoAPoller:
@@ -192,6 +226,8 @@ class DaemonDoAPoller:
         *,
         interval_seconds: float = 0.20,
         timeout_seconds: float = 0.15,
+        history_seconds: float = 30.0,
+        history_maxlen: int = 600,
         reader: Callable[[str, int, float], dict[str, Any] | None] | None = None,
     ) -> None:
         """Initialize the daemon DoA poller."""
@@ -199,10 +235,12 @@ class DaemonDoAPoller:
         self.port = port
         self.interval_seconds = interval_seconds
         self.timeout_seconds = timeout_seconds
+        self.history_seconds = max(1.0, float(history_seconds))
         self._reader = reader or read_daemon_doa
         self._lock = threading.Lock()
         self._latest: SoundTarget | None = None
         self._latest_at: float | None = None
+        self._history: deque[SpatialAudioSample] = deque(maxlen=max(1, int(history_maxlen)))
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._failure_count = 0
@@ -227,6 +265,13 @@ class DaemonDoAPoller:
         with self._lock:
             return self._latest, self._latest_at
 
+    def window(self, start_s: float, end_s: float) -> tuple[SpatialAudioSample, ...]:
+        """Return recent spatial-audio samples inside ``[start_s, end_s]``."""
+        start = min(float(start_s), float(end_s))
+        end = max(float(start_s), float(end_s))
+        with self._lock:
+            return tuple(sample for sample in self._history if start <= sample.timestamp <= end)
+
     def _loop(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -238,10 +283,25 @@ class DaemonDoAPoller:
             else:
                 self._failure_count = 0
                 if target is not None:
-                    with self._lock:
-                        self._latest = target
-                        self._latest_at = time.monotonic()
+                    self._record_target(target, time.monotonic())
             self._stop_event.wait(self.interval_seconds)
+
+    def _record_target(self, target: SoundTarget, timestamp: float) -> None:
+        """Record a target in latest-sample state and the bounded history."""
+        sample = SpatialAudioSample(
+            timestamp=float(timestamp),
+            angle=target.angle,
+            x_offset=target.x_offset,
+            azimuth_deg=target.x_offset * 90.0,
+            speech_detected=target.speech_detected,
+        )
+        with self._lock:
+            self._latest = target
+            self._latest_at = sample.timestamp
+            self._history.append(sample)
+            cutoff = sample.timestamp - self.history_seconds
+            while self._history and self._history[0].timestamp < cutoff:
+                self._history.popleft()
 
 
 def read_daemon_doa(host: str, port: int, timeout_seconds: float) -> dict[str, Any] | None:
@@ -254,6 +314,20 @@ def read_daemon_doa(host: str, port: int, timeout_seconds: float) -> dict[str, A
     return value if isinstance(value, dict) else None
 
 
+def build_daemon_spatial_audio_source(reachy_mini: object) -> DaemonDoAPoller | None:
+    """Build the shared daemon-backed spatial audio source when host/port are available."""
+    client = getattr(reachy_mini, "client", None)
+    host = getattr(client, "host", None) or getattr(reachy_mini, "host", None)
+    port = getattr(client, "port", None) or getattr(reachy_mini, "port", None)
+    if not host or port is None:
+        return None
+    try:
+        return DaemonDoAPoller(str(host), int(port))
+    except Exception as exc:
+        logger.debug("Skipping robot spatial-audio source setup: %s", exc)
+        return None
+
+
 def _audio_agreement(x_offset: float, audio_x_offset: float | None) -> float:
     if audio_x_offset is None:
         return 0.5
@@ -264,6 +338,43 @@ def _temporal_continuity(x_offset: float, state: SpeakerSelectionState | None) -
     if state is None or state.last_x_offset is None:
         return 0.0
     return _clamp_score(1.0 - abs(float(x_offset) - state.last_x_offset) / 2.0)
+
+
+def _target_matches_name(
+    target: HeadTrackerTarget,
+    prefer_name: str | None,
+    identity_targets: list[object] | None,
+) -> bool:
+    if not prefer_name or not identity_targets:
+        return False
+    preferred = prefer_name.strip().casefold()
+    if not preferred:
+        return False
+
+    target_box = _target_xyxy(target)
+    for identity_target in identity_targets:
+        if str(getattr(identity_target, "name", "") or "").strip().casefold() != preferred:
+            continue
+        visible_target = getattr(identity_target, "target", None)
+        if not isinstance(visible_target, HeadTrackerTarget):
+            continue
+        if iou(target_box, _target_xyxy(visible_target)) >= IOU_SAME_FACE:
+            return True
+    return False
+
+
+def _target_xyxy(target: HeadTrackerTarget) -> NDArray[np.float32]:
+    x, y, width, height = target.bbox
+    frame_width, frame_height = target.frame_size
+    return np.array(
+        [
+            x * frame_width,
+            y * frame_height,
+            (x + width) * frame_width,
+            (y + height) * frame_height,
+        ],
+        dtype=np.float32,
+    )
 
 
 def _clamp_unit(value: float) -> float:

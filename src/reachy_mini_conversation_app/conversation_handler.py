@@ -67,3 +67,8 @@ class ConversationHandler(AsyncStreamHandler, ABC):
     async def change_voice(self, voice: str) -> str:
         """Change the current voice."""
         ...
+
+    @abstractmethod
+    async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
+        """Inject an ambient environment message into the conversation context."""
+        ...

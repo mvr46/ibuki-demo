@@ -13,6 +13,7 @@ from reachy_mini_conversation_app.vision.head_tracking import HeadTracker
 
 if TYPE_CHECKING:
     from reachy_mini_conversation_app.vision.local_vision import VisionProcessor
+    from reachy_mini_conversation_app.vision.head_tracking.speaker import SpatialAudioSource
 
 
 class CameraVisionInitializationError(Exception):
@@ -79,6 +80,7 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
 def initialize_camera_and_vision(
     args: argparse.Namespace,
     current_robot: ReachyMini,
+    spatial_audio_source: SpatialAudioSource | None = None,
 ) -> tuple[CameraWorker | None, VisionProcessor | None]:
     """Initialize camera capture, optional head tracking, and optional local vision."""
     camera_worker: Optional[CameraWorker] = None
@@ -107,7 +109,10 @@ def initialize_camera_and_vision(
                     f"Failed to initialize {args.head_tracker} head tracker: {e}",
                 ) from e
 
-        camera_worker = CameraWorker(current_robot, head_tracker)
+        if spatial_audio_source is None:
+            camera_worker = CameraWorker(current_robot, head_tracker)
+        else:
+            camera_worker = CameraWorker(current_robot, head_tracker, spatial_audio_source=spatial_audio_source)
 
         if args.local_vision:
             result = subprocess.run(
