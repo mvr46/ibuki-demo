@@ -287,7 +287,9 @@ class FaceIdentifierWorker:
         for track_id, track in sorted(self._tracks.items()):
             if not track.confirmed and self._should_confirm(track):
                 self._confirm_track(track)
-                events.append(VisionEvent("entered", track.stable_name, position_label(track.target.x_offset), current_time))
+                events.append(
+                    VisionEvent("entered", track.stable_name, position_label(track.target.x_offset), current_time)
+                )
 
             if track.confirmed:
                 if current_time - track.last_observed_at <= self.missing_hold_seconds:

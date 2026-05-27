@@ -64,8 +64,7 @@ def test_perception_stream_formats_events_and_snapshots() -> None:
     assert _format_event(entered) == "[Vision: Alice entered the frame (center)]"
     assert _format_event(left) == "[Vision: Bob left, last seen 1 min ago]"
     assert _format_snapshot(snapshot, now=250.0) == (
-        "[Vision: Visible now - Alice (center), unknown (right). "
-        "Last seen recently: Bob (left, left 4 min ago)]"
+        "[Vision: Visible now - Alice (center), unknown (right). Last seen recently: Bob (left, left 4 min ago)]"
     )
 
 
@@ -74,9 +73,7 @@ async def test_perception_stream_injects_events() -> None:
     """The perception stream should inject queued events through the handler hook."""
     worker = _FakeWorker()
     handler = _FakeHandler()
-    task = asyncio.create_task(
-        run_perception_stream(worker, handler, snapshot_interval_s=999.0, event_debounce_s=0.0)
-    )
+    task = asyncio.create_task(run_perception_stream(worker, handler, snapshot_interval_s=999.0, event_debounce_s=0.0))
 
     await asyncio.sleep(0.6)
     task.cancel()
@@ -91,9 +88,7 @@ async def test_perception_stream_suppresses_while_assistant_speaks() -> None:
     """The perception stream should not inject events while assistant audio is active."""
     worker = _FakeWorker(assistant_speaking=True)
     handler = _FakeHandler()
-    task = asyncio.create_task(
-        run_perception_stream(worker, handler, snapshot_interval_s=0.0, event_debounce_s=0.0)
-    )
+    task = asyncio.create_task(run_perception_stream(worker, handler, snapshot_interval_s=0.0, event_debounce_s=0.0))
 
     await asyncio.sleep(0.6)
     task.cancel()

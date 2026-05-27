@@ -15,8 +15,8 @@ import reachy_mini_conversation_app.tools.core_tools as ct_mod
 import reachy_mini_conversation_app.tools.background_tool_manager as btm_mod
 from reachy_mini_conversation_app.config import OPENAI_BACKEND, config, get_default_voice_for_backend
 from reachy_mini_conversation_app.openai_realtime import OpenaiRealtimeHandler
-from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
+from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.background_tool_manager import ToolCallRoutine
 
 

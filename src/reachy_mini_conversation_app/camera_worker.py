@@ -18,8 +18,8 @@ from reachy_mini_conversation_app.vision.head_tracking.speaker import (
     SpatialAudioSource,
     SpeakerSelectionState,
     SoundOrientationController,
-    build_daemon_spatial_audio_source,
     select_speaker,
+    build_daemon_spatial_audio_source,
 )
 
 
@@ -91,6 +91,7 @@ class CameraWorker:
         self._face_identity_worker: object | None = None
         self._last_sound_debug_at = 0.0
         self._last_sound_debug_key: tuple[str, str] | None = None
+        self._spatial_audio_source: SpatialAudioSource | None
         if spatial_audio_source is not None:
             self._spatial_audio_source = spatial_audio_source
         elif doa_poller is not None:
@@ -284,7 +285,10 @@ class CameraWorker:
         """Log a throttled trace for side-sound speaker-search decisions."""
         direction = self._sound_direction_label(target)
         key = (event, direction)
-        if key == self._last_sound_debug_key and current_time - self._last_sound_debug_at < SOUND_DEBUG_LOG_INTERVAL_SECONDS:
+        if (
+            key == self._last_sound_debug_key
+            and current_time - self._last_sound_debug_at < SOUND_DEBUG_LOG_INTERVAL_SECONDS
+        ):
             return
 
         self._last_sound_debug_key = key

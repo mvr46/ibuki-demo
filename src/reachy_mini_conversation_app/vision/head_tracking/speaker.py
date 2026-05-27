@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from urllib.request import urlopen
 
 import numpy as np
+from numpy.typing import NDArray
 
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 from reachy_mini_conversation_app.vision.face_recognition_lib import IOU_SAME_FACE, iou
@@ -362,7 +363,7 @@ def _target_matches_name(
     return False
 
 
-def _target_xyxy(target: HeadTrackerTarget) -> np.ndarray:
+def _target_xyxy(target: HeadTrackerTarget) -> NDArray[np.float32]:
     x, y, width, height = target.bbox
     frame_width, frame_height = target.frame_size
     return np.array(

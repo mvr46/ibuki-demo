@@ -261,18 +261,16 @@ def test_face_identity_worker_rejects_visible_track_without_embedding() -> None:
     """remember_visible should reject tracks that have no usable embedding."""
     worker = FaceIdentifierWorker(_camera([]), _FakeIdentifier([]))
     with worker._lock:
-        worker._state.visible = (
-            [
-                IdentifiedTarget(
-                    target=_target(),
-                    name=None,
-                    similarity=0.0,
-                    embedding=None,
-                    track_id=7,
-                    can_remember=False,
-                )
-            ]
-        )
+        worker._state.visible = [
+            IdentifiedTarget(
+                target=_target(),
+                name=None,
+                similarity=0.0,
+                embedding=None,
+                track_id=7,
+                can_remember=False,
+            )
+        ]
 
     try:
         worker.remember_visible(7, "Alice")

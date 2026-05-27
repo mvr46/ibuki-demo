@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from reachy_mini_conversation_app.face_identity_worker import VisibleTrackObservation
 from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker, format_attributed_speech
+from reachy_mini_conversation_app.face_identity_worker import VisibleTrackObservation
 from reachy_mini_conversation_app.vision.head_tracking.speaker import SpatialAudioSample
 
 
@@ -56,10 +56,12 @@ def test_speaker_attribution_selects_named_audio_visual_match() -> None:
     """Audio/visual agreement should attribute speech to the matching named track."""
     worker = SpeakerAttributionWorker(
         spatial_audio_source=_AudioSource([_audio(10.2, -28.0), _audio(11.8, -30.0)]),
-        face_identity_worker=_FaceWorker([
-            _obs(7, "Matteo", 10.1, -31.0),
-            _obs(7, "Matteo", 11.9, -30.0),
-        ]),
+        face_identity_worker=_FaceWorker(
+            [
+                _obs(7, "Matteo", 10.1, -31.0),
+                _obs(7, "Matteo", 11.9, -30.0),
+            ]
+        ),
         time_origin_s=10.0,
     )
 
@@ -98,10 +100,12 @@ def test_speaker_attribution_continuity_breaks_visual_ties() -> None:
     """The previous speaker track should win an otherwise ambiguous visual-only turn."""
     worker = SpeakerAttributionWorker(
         spatial_audio_source=_AudioSource([_audio(30.5, -20.0)]),
-        face_identity_worker=_FaceWorker([
-            _obs(1, "Alice", 30.1, -20.0),
-            _obs(1, "Alice", 31.0, -20.0),
-        ]),
+        face_identity_worker=_FaceWorker(
+            [
+                _obs(1, "Alice", 30.1, -20.0),
+                _obs(1, "Alice", 31.0, -20.0),
+            ]
+        ),
         time_origin_s=30.0,
     )
 
@@ -111,12 +115,14 @@ def test_speaker_attribution_continuity_breaks_visual_ties() -> None:
     assert first.person_track_id == 1
 
     worker.spatial_audio_source = _AudioSource([])
-    worker.face_identity_worker = _FaceWorker([
-        _obs(2, "Bob", 32.1, 20.0),
-        _obs(1, "Alice", 32.1, -20.0),
-        _obs(2, "Bob", 32.9, 20.0),
-        _obs(1, "Alice", 32.9, -20.0),
-    ])
+    worker.face_identity_worker = _FaceWorker(
+        [
+            _obs(2, "Bob", 32.1, 20.0),
+            _obs(1, "Alice", 32.1, -20.0),
+            _obs(2, "Bob", 32.9, 20.0),
+            _obs(1, "Alice", 32.9, -20.0),
+        ]
+    )
     worker.notify_user_speech_started(32.0)
     second = worker.notify_user_transcript("Second turn", 33.0)
 
@@ -128,10 +134,12 @@ def test_speaker_attribution_disagreement_is_low_confidence() -> None:
     """Strong audio/visual disagreement should not confidently select the visible face."""
     worker = SpeakerAttributionWorker(
         spatial_audio_source=_AudioSource([_audio(40.5, 80.0)]),
-        face_identity_worker=_FaceWorker([
-            _obs(3, "Carol", 40.1, -30.0),
-            _obs(3, "Carol", 40.9, -30.0),
-        ]),
+        face_identity_worker=_FaceWorker(
+            [
+                _obs(3, "Carol", 40.1, -30.0),
+                _obs(3, "Carol", 40.9, -30.0),
+            ]
+        ),
         time_origin_s=40.0,
     )
 
@@ -147,10 +155,12 @@ def test_speaker_attribution_self_speech_does_not_poison_continuity() -> None:
     """Assistant-overlap segments should be flagged and excluded from future continuity."""
     worker = SpeakerAttributionWorker(
         spatial_audio_source=_AudioSource([_audio(50.5, -20.0)]),
-        face_identity_worker=_FaceWorker([
-            _obs(7, "Reachy", 50.1, -20.0),
-            _obs(7, "Reachy", 50.9, -20.0),
-        ]),
+        face_identity_worker=_FaceWorker(
+            [
+                _obs(7, "Reachy", 50.1, -20.0),
+                _obs(7, "Reachy", 50.9, -20.0),
+            ]
+        ),
         time_origin_s=50.0,
     )
 
@@ -164,12 +174,14 @@ def test_speaker_attribution_self_speech_does_not_poison_continuity() -> None:
     assert suppressed.confidence <= 0.2
 
     worker.spatial_audio_source = _AudioSource([])
-    worker.face_identity_worker = _FaceWorker([
-        _obs(8, "Dana", 52.1, 20.0),
-        _obs(7, "Reachy", 52.1, -20.0),
-        _obs(8, "Dana", 52.9, 20.0),
-        _obs(7, "Reachy", 52.9, -20.0),
-    ])
+    worker.face_identity_worker = _FaceWorker(
+        [
+            _obs(8, "Dana", 52.1, 20.0),
+            _obs(7, "Reachy", 52.1, -20.0),
+            _obs(8, "Dana", 52.9, 20.0),
+            _obs(7, "Reachy", 52.9, -20.0),
+        ]
+    )
     worker.notify_user_speech_started(52.0)
     next_segment = worker.notify_user_transcript("real user", 53.0)
 

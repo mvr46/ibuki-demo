@@ -319,9 +319,9 @@ class YoloHeadTrackerProcess:
                 if self._recovery_call_pending:
                     self._recovery_call_pending = False
                     self._drain_timed_out_reply()
-                    return None, None
+                    return None
                 if self._timed_out_request_id is not None and not self._drain_timed_out_reply():
-                    return None, None
+                    return None
 
                 request_id = self._next_request_id
                 self._next_request_id += 1

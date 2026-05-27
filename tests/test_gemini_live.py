@@ -13,8 +13,8 @@ from fastrtc import AdditionalOutputs
 import reachy_mini_conversation_app.gemini_live as gemini_mod
 import reachy_mini_conversation_app.tools.core_tools as ct_mod
 from reachy_mini_conversation_app.gemini_live import GeminiLiveHandler
-from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
+from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.tool_constants import ToolState
 from reachy_mini_conversation_app.tools.background_tool_manager import ToolNotification
 
@@ -217,9 +217,7 @@ async def test_gemini_turn_completion_injects_speech_attribution(monkeypatch: py
 
     task = asyncio.create_task(handler._run_live_session())
     await _wait_for(
-        lambda: any(
-            item.get("text", "").startswith("[Speech attribution:") for item in session.realtime_inputs
-        ),
+        lambda: any(item.get("text", "").startswith("[Speech attribution:") for item in session.realtime_inputs),
         timeout=2.0,
     )
 

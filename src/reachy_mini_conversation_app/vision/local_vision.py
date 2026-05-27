@@ -24,8 +24,8 @@ except ModuleNotFoundError:
 try:
     from transformers import AutoProcessor, AutoModelForImageTextToText
 except ModuleNotFoundError:
-    AutoProcessor = None  # type: ignore[assignment]
-    AutoModelForImageTextToText = None  # type: ignore[assignment]
+    AutoProcessor = None
+    AutoModelForImageTextToText = None
 
 from reachy_mini_conversation_app.config import config
 
@@ -128,7 +128,7 @@ class VisionProcessor:
         logger.info("Loading SmolVLM2 model on %s (HF_HOME=%s)", self.device, config.HF_HOME)
         processor = cast(
             _VisionProcessor,
-            AutoProcessor.from_pretrained(self.vision_config.model_path),  # type: ignore[no-untyped-call]
+            AutoProcessor.from_pretrained(self.vision_config.model_path),
         )
 
         if AutoModelForImageTextToText is None:

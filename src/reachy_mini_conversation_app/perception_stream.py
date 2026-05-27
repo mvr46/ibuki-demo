@@ -5,9 +5,9 @@ import time
 import asyncio
 import logging
 
+from reachy_mini_conversation_app.speaker_attribution import format_attributed_speech
 from reachy_mini_conversation_app.conversation_handler import ConversationHandler
 from reachy_mini_conversation_app.face_identity_worker import VisionEvent, PerceptionSnapshot, FaceIdentifierWorker
-from reachy_mini_conversation_app.speaker_attribution import format_attributed_speech
 
 
 logger = logging.getLogger(__name__)

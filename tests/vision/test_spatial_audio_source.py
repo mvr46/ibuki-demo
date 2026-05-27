@@ -1,7 +1,6 @@
 """Tests for shared spatial-audio history."""
 
 from __future__ import annotations
-
 import math
 
 import pytest

@@ -1,14 +1,13 @@
 """Multimodal speaker-attribution worker for ambient conversation context."""
 
 from __future__ import annotations
-
 import json
 import time
 import logging
 import threading
-from dataclasses import dataclass
 from collections import defaultdict
-from collections.abc import Mapping
+from dataclasses import dataclass
+from collections.abc import Mapping, Iterable
 
 from reachy_mini_conversation_app.vision.head_tracking.speaker import SpatialAudioSample, SpatialAudioSource
 
@@ -445,11 +444,11 @@ def _speaker_label(name: str | None, track_id: int) -> str:
     return f"{name}/{track_label}" if name else track_label
 
 
-def _mean(values: object) -> float:
+def _mean(values: Iterable[float]) -> float:
     items = list(values)
     if not items:
         return 0.0
-    return sum(float(item) for item in items) / len(items)
+    return sum(items) / len(items)
 
 
 def _clamp01(value: float) -> float:

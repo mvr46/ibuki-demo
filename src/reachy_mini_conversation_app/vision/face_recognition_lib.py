@@ -3,7 +3,7 @@
 from __future__ import annotations
 import pickle
 import logging
-from typing import Optional
+from typing import Optional, TypedDict, cast
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -94,6 +94,15 @@ class FaceDB:
         return [Person(name=name, embeddings=tuple(exemplars)) for name, exemplars in self.people.items()]
 
 
+class _Track(TypedDict):
+    id: int
+    bbox: NDArray[np.float32]
+    name: str | None
+    unknown_streak: int
+    skipped: bool
+    _matched: bool
+
+
 def iou(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
     """Return intersection-over-union for two ``xyxy`` boxes."""
     ax1, ay1, ax2, ay2 = a
@@ -114,15 +123,15 @@ class Tracker:
 
     def __init__(self) -> None:
         """Initialize empty tracking state."""
-        self.tracks: list[dict] = []
+        self.tracks: list[_Track] = []
         self._next_id = 0
 
-    def step(self, detections: list[tuple[NDArray[np.float32], Optional[str]]]) -> list[dict]:
+    def step(self, detections: list[tuple[NDArray[np.float32], Optional[str]]]) -> list[_Track]:
         """Return tracks aligned 1:1 with ``detections``."""
         for track in self.tracks:
             track["_matched"] = False
 
-        result: list[dict] = []
+        result: list[_Track] = []
         for det_bbox, det_name in detections:
             best_i, best_v = -1, 0.0
             for index, track in enumerate(self.tracks):
@@ -143,7 +152,7 @@ class Tracker:
                     track["unknown_streak"] += 1
                 result.append(track)
             else:
-                track = {
+                new_track: _Track = {
                     "id": self._next_id,
                     "bbox": det_bbox,
                     "name": det_name,
@@ -152,7 +161,7 @@ class Tracker:
                     "_matched": True,
                 }
                 self._next_id += 1
-                result.append(track)
+                result.append(new_track)
 
         self.tracks = list(result)
         return result
@@ -224,7 +233,8 @@ class FaceRecognizer:
     def _norm_crop(self, frame_bgr: NDArray[np.uint8], kps: NDArray[np.float32]) -> NDArray[np.uint8]:
         from insightface.utils import face_align
 
-        return face_align.norm_crop(frame_bgr, landmark=kps, image_size=112)
+        cropped = face_align.norm_crop(frame_bgr, landmark=kps, image_size=112)
+        return cast(NDArray[np.uint8], np.asarray(cropped, dtype=np.uint8))
 
     def _embed(self, aligned_bgr: NDArray[np.uint8]) -> NDArray[np.float32] | None:
         try:
@@ -255,7 +265,7 @@ def _clip_bbox_xyxy(bbox: NDArray[np.float32], frame_shape: tuple[int, ...]) -> 
     return np.array([x1, y1, x2, y2], dtype=np.float32)
 
 
-class _FaceContainer(dict):
+class _FaceContainer(dict[str, object]):
     """Tiny mutable face object compatible with InsightFace landmark models."""
 
     def __init__(self, **kwargs: object) -> None:
@@ -304,7 +314,9 @@ def _five_point_landmarks(
     nose = landmarks[np.argmin(np.sum((landmarks - np.array([x_mid, y1 + height * 0.55])) ** 2, axis=1))]
 
     if len(mouth_points) >= 2:
-        mouth_left = _mean_or_default(mouth_points[mouth_points[:, 0] < x_mid], (x1 + width * 0.40, y1 + height * 0.74))
+        mouth_left = _mean_or_default(
+            mouth_points[mouth_points[:, 0] < x_mid], (x1 + width * 0.40, y1 + height * 0.74)
+        )
         mouth_right = _mean_or_default(
             mouth_points[mouth_points[:, 0] >= x_mid],
             (x1 + width * 0.60, y1 + height * 0.74),
@@ -319,7 +331,7 @@ def _five_point_landmarks(
 def _mean_or_default(points: NDArray[np.float32], default: tuple[float, float]) -> NDArray[np.float32]:
     if len(points) == 0:
         return np.asarray(default, dtype=np.float32)
-    return np.mean(points, axis=0).astype(np.float32)
+    return cast(NDArray[np.float32], np.mean(points, axis=0).astype(np.float32))
 
 
 def _normalize_embedding(embedding: NDArray[np.float32]) -> NDArray[np.float32]:

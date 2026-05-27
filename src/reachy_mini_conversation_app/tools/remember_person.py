@@ -54,7 +54,9 @@ class RememberPerson(Tool):
 
 
 def _largest_unknown(identified: list[IdentifiedTarget]) -> IdentifiedTarget | None:
-    unknown = [target for target in identified if target.name is None and target.can_remember and target.embedding is not None]
+    unknown = [
+        target for target in identified if target.name is None and target.can_remember and target.embedding is not None
+    ]
     if not unknown:
         return None
     return max(unknown, key=lambda target: target.target.area)

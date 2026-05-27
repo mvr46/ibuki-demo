@@ -18,18 +18,17 @@ Controls inside the cv2 window:
     q   quit
     r   reload DB from disk
 """
-from __future__ import annotations
 
-import argparse
-import pickle
+from __future__ import annotations
 import sys
 import time
-from pathlib import Path
+import pickle
+import argparse
 from typing import Optional
+from pathlib import Path
 
 import cv2
 import numpy as np
-
 import insightface
 from insightface.app import FaceAnalysis
 
@@ -49,11 +48,13 @@ class FaceDB:
     """Pickled ``dict[name, list[normed_embedding]]`` with multi-exemplar match."""
 
     def __init__(self, path: Path):
+        """Load or create a persistent face database at ``path``."""
         self.path = path
         self.people: dict[str, list[np.ndarray]] = {}
         self.load()
 
     def load(self) -> None:
+        """Load people and exemplar embeddings from disk if available."""
         if self.path.exists():
             with self.path.open("rb") as f:
                 self.people = pickle.load(f)
@@ -64,12 +65,14 @@ class FaceDB:
             print(f"No DB at {self.path} — starting empty.")
 
     def save(self) -> None:
+        """Persist the database with an atomic file replacement."""
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         with tmp.open("wb") as f:
             pickle.dump(self.people, f)
         tmp.replace(self.path)  # atomic on POSIX
 
     def add(self, name: str, embedding: np.ndarray) -> None:
+        """Store a new exemplar embedding for ``name``."""
         self.people.setdefault(name, []).append(embedding.astype(np.float32))
         self.save()
 
@@ -95,6 +98,7 @@ class FaceDB:
 
 
 def iou(a: np.ndarray, b: np.ndarray) -> float:
+    """Return intersection-over-union for two bounding boxes."""
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     ix1, iy1 = max(ax1, bx1), max(ay1, by1)
@@ -117,6 +121,7 @@ class Tracker:
     """
 
     def __init__(self) -> None:
+        """Create an empty tracker."""
         self.tracks: list[dict] = []
         self._next_id = 0
 
@@ -158,7 +163,7 @@ class Tracker:
                 result.append(t)
 
         # Drop tracks that didn't survive this frame.
-        self.tracks = [t for t in result]
+        self.tracks = list(result)
         return result
 
 
@@ -168,6 +173,7 @@ class Tracker:
 
 
 def draw_face(frame: np.ndarray, track: dict, sim: float, stability: int) -> None:
+    """Draw a bounding box and label for a tracked face."""
     x1, y1, x2, y2 = (int(v) for v in track["bbox"])
     name = track["name"]
     if name is not None:
@@ -181,17 +187,30 @@ def draw_face(frame: np.ndarray, track: dict, sim: float, stability: int) -> Non
         color = (0, 165, 255)  # orange BGR
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
     cv2.putText(
-        frame, label, (x1, max(y1 - 8, 16)),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA,
+        frame,
+        label,
+        (x1, max(y1 - 8, 16)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        color,
+        2,
+        cv2.LINE_AA,
     )
 
 
 def draw_paused_banner(frame: np.ndarray) -> None:
+    """Draw the prompt banner shown while waiting for terminal input."""
     h = frame.shape[0]
     cv2.rectangle(frame, (0, h - 36), (frame.shape[1], h), (0, 0, 0), -1)
     cv2.putText(
-        frame, "PAUSED — enter name in terminal (blank to skip)",
-        (12, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2, cv2.LINE_AA,
+        frame,
+        "PAUSED — enter name in terminal (blank to skip)",
+        (12, h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (0, 165, 255),
+        2,
+        cv2.LINE_AA,
     )
 
 
@@ -201,15 +220,17 @@ def draw_paused_banner(frame: np.ndarray) -> None:
 
 
 def main() -> int:
+    """Run webcam face recognition with optional enrollment prompts."""
     parser = argparse.ArgumentParser(description="Webcam face recognition with a name DB.")
     parser.add_argument("--camera", type=int, default=0, help="cv2 VideoCapture index")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
-                        help="cosine-similarity threshold to call a match")
+    parser.add_argument(
+        "--threshold", type=float, default=DEFAULT_THRESHOLD, help="cosine-similarity threshold to call a match"
+    )
     parser.add_argument("--db", default=DEFAULT_DB, help="path to the face database pickle")
-    parser.add_argument("--stability", type=int, default=DEFAULT_STABILITY,
-                        help="consecutive unknown detections before prompting")
-    parser.add_argument("--no-mirror", action="store_true",
-                        help="don't horizontally flip the preview")
+    parser.add_argument(
+        "--stability", type=int, default=DEFAULT_STABILITY, help="consecutive unknown detections before prompting"
+    )
+    parser.add_argument("--no-mirror", action="store_true", help="don't horizontally flip the preview")
     args = parser.parse_args()
 
     print(f"insightface {insightface.__version__}")
@@ -223,8 +244,11 @@ def main() -> int:
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
-        print("error: could not open camera. Grant Terminal camera access "
-              "in System Settings → Privacy & Security → Camera.", file=sys.stderr)
+        print(
+            "error: could not open camera. Grant Terminal camera access "
+            "in System Settings → Privacy & Security → Camera.",
+            file=sys.stderr,
+        )
         return 1
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -246,8 +270,7 @@ def main() -> int:
 
         faces = app.get(frame)
 
-        detections = [(f.bbox.astype(int), db.match(f.normed_embedding, args.threshold)[0])
-                      for f in faces]
+        detections = [(f.bbox.astype(int), db.match(f.normed_embedding, args.threshold)[0]) for f in faces]
         tracks = tracker.step(detections)
 
         # Render boxes + labels.
@@ -265,9 +288,7 @@ def main() -> int:
         # First stable unknown in this frame → pause and prompt.
         prompt_idx = None
         for i, track in enumerate(tracks):
-            if (track["name"] is None
-                    and not track["skipped"]
-                    and track["unknown_streak"] >= args.stability):
+            if track["name"] is None and not track["skipped"] and track["unknown_streak"] >= args.stability:
                 prompt_idx = i
                 break
 
@@ -289,8 +310,7 @@ def main() -> int:
                 db.add(name, faces[prompt_idx].normed_embedding)
                 tracks[prompt_idx]["name"] = name
                 tracks[prompt_idx]["unknown_streak"] = 0
-                print(f"  ✓ saved '{name}' → {args.db} "
-                      f"({len(db.people[name])} exemplar(s))")
+                print(f"  ✓ saved '{name}' → {args.db} ({len(db.people[name])} exemplar(s))")
             else:
                 tracks[prompt_idx]["skipped"] = True
                 print("  ✗ skipped for this session")

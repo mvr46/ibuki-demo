@@ -105,6 +105,7 @@ def _install_network_media_host_fallback() -> None:
             from reachy_mini.media.webrtc_utils import get_producer_list
 
             if self.connection_mode == "network":
+
                 class RemoteWebRTCAudioDoA:
                     def get_DoA(self) -> None:
                         return None
@@ -135,8 +136,8 @@ def _install_network_media_host_fallback() -> None:
             daemon_url=self._daemon_http_url,
         )
 
-    ReachyMini._configure_mediamanager = _configure_mediamanager_with_host_fallback  # type: ignore[method-assign]
-    ReachyMini._conversation_app_media_host_fallback = True  # type: ignore[attr-defined]
+    ReachyMini._configure_mediamanager = _configure_mediamanager_with_host_fallback
+    ReachyMini._conversation_app_media_host_fallback = True
 
 
 def main() -> None:
