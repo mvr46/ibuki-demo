@@ -276,8 +276,17 @@ def run(
         logger.info("Simulation mode detected. Automatically enabling gradio flag.")
         args.gradio = True
 
+    from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
+    from reachy_mini_conversation_app.vision.head_tracking.speaker import build_daemon_spatial_audio_source
+
+    spatial_audio_source = build_daemon_spatial_audio_source(robot)
+
     try:
-        camera_worker, vision_processor = initialize_camera_and_vision(args, robot)
+        camera_worker, vision_processor = initialize_camera_and_vision(
+            args,
+            robot,
+            spatial_audio_source=spatial_audio_source,
+        )
     except CameraVisionInitializationError as e:
         logger.error("Failed to initialize camera/vision: %s", e)
         sys.exit(1)
@@ -304,11 +313,19 @@ def run(
         except Exception as e:
             logger.warning("Face recognition worker unavailable: %s", e)
 
+    speaker_attribution_worker = SpeakerAttributionWorker(
+        spatial_audio_source=spatial_audio_source,
+        face_identity_worker=face_identity_worker,
+        assistant_state_source=camera_worker,
+    )
+
     deps = ToolDependencies(
         reachy_mini=robot,
         movement_manager=movement_manager,
         camera_worker=camera_worker,
         face_identity_worker=face_identity_worker,
+        spatial_audio_source=spatial_audio_source,
+        speaker_attribution_worker=speaker_attribution_worker,
         vision_processor=vision_processor,
         head_wobbler=head_wobbler,
     )
@@ -423,6 +440,10 @@ def run(
     head_wobbler.start()
     if camera_worker:
         camera_worker.start()
+    elif spatial_audio_source:
+        spatial_audio_start = getattr(spatial_audio_source, "start", None)
+        if callable(spatial_audio_start):
+            spatial_audio_start()
     if face_identity_worker:
         face_identity_worker.start()
 
@@ -451,6 +472,10 @@ def run(
             face_identity_worker.stop()
         if camera_worker:
             camera_worker.stop()
+        elif spatial_audio_source:
+            spatial_audio_stop = getattr(spatial_audio_source, "stop", None)
+            if callable(spatial_audio_stop):
+                spatial_audio_stop()
 
         # Ensure media is explicitly closed before disconnecting
         try:

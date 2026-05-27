@@ -195,6 +195,18 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
+def _env_float(name: str, default: float) -> float:
+    """Parse a floating-point environment value."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid float value for %s=%r, using default=%s", name, raw, default)
+        return default
+
+
 def _normalize_hf_connection_mode(value: str | None) -> str | None:
     """Normalize the Hugging Face connection mode, if explicitly configured."""
     candidate = (value or "").strip().lower()
@@ -366,6 +378,7 @@ class Config:
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
+    REACHY_CAMERA_HORIZONTAL_FOV_DEG = _env_float("REACHY_CAMERA_HORIZONTAL_FOV_DEG", 60.0)
 
     logger.debug(
         "Backend provider: %s, Model: %s, HF mode: %s, HF session URL set: %s, HF direct URL set: %s, HF_HOME: %s, Vision Model: %s",
@@ -469,6 +482,7 @@ def refresh_runtime_config_from_env() -> None:
     config.HF_HOME = os.getenv("HF_HOME", "./cache")
     config.LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     config.HF_TOKEN = os.getenv("HF_TOKEN")
+    config.REACHY_CAMERA_HORIZONTAL_FOV_DEG = _env_float("REACHY_CAMERA_HORIZONTAL_FOV_DEG", 60.0)
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
 
 

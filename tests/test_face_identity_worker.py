@@ -117,6 +117,28 @@ def test_face_identity_worker_remembers_visible_track() -> None:
     assert events[-1].name == "Alice"
 
 
+def test_face_identity_worker_records_visual_history() -> None:
+    """Visible tracks should be queryable as bearing-aware observations."""
+    named = _identified("Matteo", x_offset=-0.5)
+    unknown = _identified(None, x_offset=0.4)
+    worker = FaceIdentifierWorker(
+        _camera([named.target, unknown.target]),
+        _FakeIdentifier([]),
+        camera_horizontal_fov_deg=60.0,
+    )
+
+    worker._update_state([named, unknown], 10.0)
+
+    observations = worker.visual_window(9.0, 11.0)
+    assert len(observations) == 2
+    assert observations[0].track_id == 0
+    assert observations[0].name == "Matteo"
+    assert observations[0].visual_bearing_deg == -15.0
+    assert observations[1].track_id == 1
+    assert observations[1].name is None
+    assert observations[1].visual_bearing_deg == 12.0
+
+
 def test_face_identity_worker_rejects_stale_visible_track() -> None:
     """remember_visible should fail cleanly for absent/stale tracks."""
     worker = FaceIdentifierWorker(_camera([]), _FakeIdentifier([]))

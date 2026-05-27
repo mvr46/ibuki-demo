@@ -10,6 +10,7 @@ from dataclasses import field, dataclass
 
 import numpy as np
 
+from reachy_mini_conversation_app.config import config
 from reachy_mini_conversation_app.vision.face_identity import (
     FaceIdentifier,
     IdentifiedTarget,
@@ -45,6 +46,19 @@ class PerceptionSnapshot:
     last_positions: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class VisibleTrackObservation:
+    """One timestamped visible-track observation for multimodal attribution."""
+
+    track_id: int
+    name: str | None
+    x_offset: float
+    visual_bearing_deg: float
+    bbox: tuple[float, float, float, float]
+    confidence: float
+    timestamp: float
+
+
 @dataclass
 class PerceptionState:
     """Mutable face perception state guarded by a worker lock."""
@@ -53,6 +67,7 @@ class PerceptionState:
     last_seen: dict[str, float] = field(default_factory=dict)
     last_positions: dict[str, str] = field(default_factory=dict)
     events: deque[VisionEvent] = field(default_factory=deque)
+    visual_history: deque[VisibleTrackObservation] = field(default_factory=deque)
 
 
 class FaceIdentifierWorker:
@@ -64,12 +79,22 @@ class FaceIdentifierWorker:
         identifier: FaceIdentifier,
         *,
         rate_hz: float = 2.5,
+        camera_horizontal_fov_deg: float | None = None,
+        visual_history_seconds: float = 30.0,
+        visual_history_maxlen: int = 600,
     ) -> None:
         """Initialize the worker."""
         self.camera_worker = camera_worker
         self.identifier = identifier
         self.rate_hz = max(0.1, float(rate_hz))
+        self.camera_horizontal_fov_deg = (
+            float(camera_horizontal_fov_deg)
+            if camera_horizontal_fov_deg is not None
+            else float(config.REACHY_CAMERA_HORIZONTAL_FOV_DEG)
+        )
+        self.visual_history_seconds = max(1.0, float(visual_history_seconds))
         self._state = PerceptionState()
+        self._state.visual_history = deque(maxlen=max(1, int(visual_history_maxlen)))
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -113,6 +138,13 @@ class FaceIdentifierWorker:
             events = list(self._state.events)
             self._state.events.clear()
         return events
+
+    def visual_window(self, start_s: float, end_s: float) -> tuple[VisibleTrackObservation, ...]:
+        """Return visible-track observations inside ``[start_s, end_s]``."""
+        start = min(float(start_s), float(end_s))
+        end = max(float(start_s), float(end_s))
+        with self._lock:
+            return tuple(item for item in self._state.visual_history if start <= item.timestamp <= end)
 
     def remember_visible(self, track_id: int, name: str) -> dict[str, object]:
         """Save a currently visible tracked face under ``name`` and update state."""
@@ -238,6 +270,7 @@ class FaceIdentifierWorker:
             self._track_last_seen = next_last_seen
             self._track_positions = next_positions
             self._state.visible = visible
+            self._record_visual_observations_locked(visible, current_time)
             for item in visible:
                 if item.name is not None:
                     self._state.last_seen[item.name] = current_time
@@ -247,6 +280,29 @@ class FaceIdentifierWorker:
                     self._state.last_seen[event.name] = event.last_seen_at
                     self._state.last_positions[event.name] = event.position
                 self._state.events.append(event)
+
+    def _record_visual_observations_locked(self, visible: list[IdentifiedTarget], current_time: float) -> None:
+        """Append visible-track observations. Caller must hold ``self._lock``."""
+        cutoff = current_time - self.visual_history_seconds
+        while self._state.visual_history and self._state.visual_history[0].timestamp < cutoff:
+            self._state.visual_history.popleft()
+
+        for item in visible:
+            if item.track_id is None:
+                continue
+            target = item.target
+            x, y, width, height = target.bbox
+            self._state.visual_history.append(
+                VisibleTrackObservation(
+                    track_id=int(item.track_id),
+                    name=item.name,
+                    x_offset=float(target.x_offset),
+                    visual_bearing_deg=float(target.x_offset) * (self.camera_horizontal_fov_deg / 2.0),
+                    bbox=(float(x), float(y), float(width), float(height)),
+                    confidence=float(target.confidence),
+                    timestamp=float(current_time),
+                )
+            )
 
 
 def position_label(x_offset: float) -> str:

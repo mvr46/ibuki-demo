@@ -174,6 +174,16 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         if callable(method):
             method()
 
+    def _notify_speaker_attribution_worker(self, method_name: str, *args: Any) -> Any:
+        """Best-effort notification for multimodal speaker attribution state."""
+        speaker_worker = getattr(self.deps, "speaker_attribution_worker", None)
+        if speaker_worker is None:
+            return None
+        method = getattr(speaker_worker, method_name, None)
+        if callable(method):
+            return method(*args)
+        return None
+
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
         """Remove bulky transport-only fields before echoing tool output back to the model."""
@@ -705,11 +715,15 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                 # Start the response sender worker
                 response_sender_task = asyncio.create_task(self._response_sender_loop(), name="response-sender")
-                if self.deps.face_identity_worker is not None:
+                if self.deps.face_identity_worker is not None or self.deps.speaker_attribution_worker is not None:
                     from reachy_mini_conversation_app.perception_stream import run_perception_stream
 
                     perception_task = asyncio.create_task(
-                        run_perception_stream(self.deps.face_identity_worker, self),
+                        run_perception_stream(
+                            self.deps.face_identity_worker,
+                            self,
+                            speaker_attribution_worker=self.deps.speaker_attribution_worker,
+                        ),
                         name="perception-stream",
                     )
 
@@ -718,6 +732,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     if event.type == "input_audio_buffer.speech_started":
                         self._mark_activity("user_speech_started")
                         self._notify_camera_worker("notify_user_speech_started")
+                        self._notify_speaker_attribution_worker("notify_user_speech_started")
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
@@ -731,11 +746,13 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     if event.type == "input_audio_buffer.speech_stopped":
                         self._mark_activity("user_speech_stopped")
                         self._notify_camera_worker("notify_user_speech_stopped")
+                        self._notify_speaker_attribution_worker("notify_user_speech_stopped")
                         self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type == "response.output_audio.done":
                         self._notify_camera_worker("notify_assistant_audio_done")
+                        self._notify_speaker_attribution_worker("notify_assistant_audio_done")
                         if self.deps.head_wobbler is not None:
                             self.deps.head_wobbler.request_reset_after_current_audio()
                         logger.debug("response completed")
@@ -769,6 +786,10 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     if event.type == "conversation.item.input_audio_transcription.delta":
                         self._mark_activity("user_transcription_delta")
                         self._notify_camera_worker("notify_user_partial")
+                        self._notify_speaker_attribution_worker(
+                            "notify_user_partial",
+                            getattr(event, "delta", "") or "",
+                        )
                         logger.debug(f"User partial transcript: {event.delta}")
 
                         item_id = event.item_id
@@ -814,6 +835,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                             continue
 
                         self._notify_camera_worker("notify_user_transcript")
+                        self._notify_speaker_attribution_worker("notify_user_transcript", transcript)
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
@@ -831,6 +853,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
                         self._notify_camera_worker("notify_assistant_audio_started")
+                        self._notify_speaker_attribution_worker("notify_assistant_audio_started")
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         if self.gradio_mode and self.deps.head_wobbler is not None:

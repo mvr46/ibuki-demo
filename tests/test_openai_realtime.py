@@ -15,6 +15,7 @@ import reachy_mini_conversation_app.tools.core_tools as ct_mod
 import reachy_mini_conversation_app.tools.background_tool_manager as btm_mod
 from reachy_mini_conversation_app.config import OPENAI_BACKEND, config, get_default_voice_for_backend
 from reachy_mini_conversation_app.openai_realtime import OpenaiRealtimeHandler
+from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
 from reachy_mini_conversation_app.tools.background_tool_manager import ToolCallRoutine
 
@@ -424,6 +425,115 @@ async def test_empty_user_transcript_exits_listening_without_chat_message(monkey
     assert [call.args[0] for call in movement_manager.set_listening.call_args_list] == [True, False]
     assert handler.output_queue.empty()
     assert handler._turn_user_done_at is None
+
+
+@pytest.mark.asyncio
+async def test_openai_transcript_completion_injects_speech_attribution(monkeypatch: Any) -> None:
+    """OpenAI-compatible transcript completion should create and inject one attributed speech message."""
+    monkeypatch.setattr(rt_mod, "get_session_instructions", lambda: "test")
+    monkeypatch.setattr(rt_mod, "get_session_voice", lambda default=OPENAI_DEFAULT_VOICE: "alloy")
+    monkeypatch.setattr(rt_mod, "get_active_tool_specs", lambda _: [])
+
+    class FakeEvent:
+        def __init__(self, etype: str, **kwargs: Any) -> None:
+            self.type = etype
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    class FakeSession:
+        async def update(self, **_kw: Any) -> None:
+            pass
+
+    class FakeInputAudioBuffer:
+        async def append(self, **_kw: Any) -> None:
+            pass
+
+    class FakeItem:
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> None:
+            self.created.append(kwargs)
+
+    class FakeConversation:
+        def __init__(self) -> None:
+            self.item = FakeItem()
+
+    class FakeResponse:
+        async def create(self, **_kw: Any) -> None:
+            pass
+
+        async def cancel(self, **_kw: Any) -> None:
+            pass
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.session = FakeSession()
+            self.input_audio_buffer = FakeInputAudioBuffer()
+            self.conversation = FakeConversation()
+            self.response = FakeResponse()
+            self._events = iter(
+                [
+                    FakeEvent("input_audio_buffer.speech_started"),
+                    FakeEvent("conversation.item.input_audio_transcription.completed", transcript="hello there"),
+                ]
+            )
+            self._drain_pause_done = False
+
+        async def __aenter__(self) -> "FakeConn":
+            return self
+
+        async def __aexit__(self, *_args: Any) -> bool:
+            return False
+
+        async def close(self) -> None:
+            pass
+
+        def __aiter__(self) -> "FakeConn":
+            return self
+
+        async def __anext__(self) -> FakeEvent:
+            try:
+                return next(self._events)
+            except StopIteration:
+                if not self._drain_pause_done:
+                    self._drain_pause_done = True
+                    await asyncio.sleep(0.6)
+                raise StopAsyncIteration
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.conn = FakeConn()
+
+        def connect(self, **_kw: Any) -> FakeConn:
+            return self.conn
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.realtime = FakeRealtime()
+
+    speaker_worker = SpeakerAttributionWorker(time_origin_s=0.0)
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        speaker_attribution_worker=speaker_worker,
+    )
+    handler = OpenaiRealtimeHandler(deps)
+    fake_client = FakeClient()
+    handler.client = fake_client
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    await handler._run_realtime_session()
+
+    speech_messages = [
+        kwargs["item"]["content"][0]["text"]
+        for kwargs in fake_client.realtime.conn.conversation.item.created
+        if kwargs["item"]["content"][0]["text"].startswith("[Speech attribution:")
+    ]
+    assert len(speech_messages) == 1
+    assert 'transcript="hello there"' in speech_messages[0]
+    assert len(speaker_worker.snapshot()) == 1
 
 
 @pytest.mark.asyncio

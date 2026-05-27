@@ -6,7 +6,8 @@ import math
 import time
 import logging
 import threading
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
+from collections import deque
 from dataclasses import dataclass
 from urllib.request import urlopen
 
@@ -26,6 +27,29 @@ class SoundTarget:
     angle: float
     x_offset: float
     speech_detected: bool
+
+
+@dataclass(frozen=True)
+class SpatialAudioSample:
+    """One timestamped direction-of-arrival sample."""
+
+    timestamp: float
+    angle: float
+    x_offset: float
+    azimuth_deg: float
+    speech_detected: bool
+
+
+class SpatialAudioSource(Protocol):
+    """Shared source of recent robot spatial-audio samples."""
+
+    def get_latest(self) -> tuple[SoundTarget | None, float | None]:
+        """Return the latest target and monotonic timestamp."""
+        ...
+
+    def window(self, start_s: float, end_s: float) -> tuple[SpatialAudioSample, ...]:
+        """Return samples whose timestamps fall inside a monotonic-time window."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -201,6 +225,8 @@ class DaemonDoAPoller:
         *,
         interval_seconds: float = 0.20,
         timeout_seconds: float = 0.15,
+        history_seconds: float = 30.0,
+        history_maxlen: int = 600,
         reader: Callable[[str, int, float], dict[str, Any] | None] | None = None,
     ) -> None:
         """Initialize the daemon DoA poller."""
@@ -208,10 +234,12 @@ class DaemonDoAPoller:
         self.port = port
         self.interval_seconds = interval_seconds
         self.timeout_seconds = timeout_seconds
+        self.history_seconds = max(1.0, float(history_seconds))
         self._reader = reader or read_daemon_doa
         self._lock = threading.Lock()
         self._latest: SoundTarget | None = None
         self._latest_at: float | None = None
+        self._history: deque[SpatialAudioSample] = deque(maxlen=max(1, int(history_maxlen)))
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._failure_count = 0
@@ -236,6 +264,13 @@ class DaemonDoAPoller:
         with self._lock:
             return self._latest, self._latest_at
 
+    def window(self, start_s: float, end_s: float) -> tuple[SpatialAudioSample, ...]:
+        """Return recent spatial-audio samples inside ``[start_s, end_s]``."""
+        start = min(float(start_s), float(end_s))
+        end = max(float(start_s), float(end_s))
+        with self._lock:
+            return tuple(sample for sample in self._history if start <= sample.timestamp <= end)
+
     def _loop(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -247,10 +282,25 @@ class DaemonDoAPoller:
             else:
                 self._failure_count = 0
                 if target is not None:
-                    with self._lock:
-                        self._latest = target
-                        self._latest_at = time.monotonic()
+                    self._record_target(target, time.monotonic())
             self._stop_event.wait(self.interval_seconds)
+
+    def _record_target(self, target: SoundTarget, timestamp: float) -> None:
+        """Record a target in latest-sample state and the bounded history."""
+        sample = SpatialAudioSample(
+            timestamp=float(timestamp),
+            angle=target.angle,
+            x_offset=target.x_offset,
+            azimuth_deg=target.x_offset * 90.0,
+            speech_detected=target.speech_detected,
+        )
+        with self._lock:
+            self._latest = target
+            self._latest_at = sample.timestamp
+            self._history.append(sample)
+            cutoff = sample.timestamp - self.history_seconds
+            while self._history and self._history[0].timestamp < cutoff:
+                self._history.popleft()
 
 
 def read_daemon_doa(host: str, port: int, timeout_seconds: float) -> dict[str, Any] | None:
@@ -261,6 +311,20 @@ def read_daemon_doa(host: str, port: int, timeout_seconds: float) -> dict[str, A
         return None
     value = json.loads(body)
     return value if isinstance(value, dict) else None
+
+
+def build_daemon_spatial_audio_source(reachy_mini: object) -> DaemonDoAPoller | None:
+    """Build the shared daemon-backed spatial audio source when host/port are available."""
+    client = getattr(reachy_mini, "client", None)
+    host = getattr(client, "host", None) or getattr(reachy_mini, "host", None)
+    port = getattr(client, "port", None) or getattr(reachy_mini, "port", None)
+    if not host or port is None:
+        return None
+    try:
+        return DaemonDoAPoller(str(host), int(port))
+    except Exception as exc:
+        logger.debug("Skipping robot spatial-audio source setup: %s", exc)
+        return None
 
 
 def _audio_agreement(x_offset: float, audio_x_offset: float | None) -> float:

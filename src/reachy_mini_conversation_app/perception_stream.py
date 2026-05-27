@@ -1,4 +1,4 @@
-"""Async stream that injects face perception updates into conversation context."""
+"""Async stream that injects situational awareness into conversation context."""
 
 from __future__ import annotations
 import time
@@ -7,38 +7,48 @@ import logging
 
 from reachy_mini_conversation_app.conversation_handler import ConversationHandler
 from reachy_mini_conversation_app.face_identity_worker import VisionEvent, PerceptionSnapshot, FaceIdentifierWorker
+from reachy_mini_conversation_app.speaker_attribution import format_attributed_speech
 
 
 logger = logging.getLogger(__name__)
 
 
 async def run_perception_stream(
-    worker: FaceIdentifierWorker,
+    worker: FaceIdentifierWorker | None,
     handler: ConversationHandler,
     *,
+    speaker_attribution_worker: object | None = None,
     snapshot_interval_s: float = 12.0,
     event_debounce_s: float = 1.5,
 ) -> None:
-    """Drain perception events and emit debounced scene snapshots."""
+    """Drain face and speech-attribution events and emit debounced scene snapshots."""
     last_snapshot_at = 0.0
     last_snapshot_set: frozenset[str] = frozenset()
 
     while True:
-        if _assistant_is_speaking(worker):
+        if _assistant_is_speaking(worker, speaker_attribution_worker):
             await asyncio.sleep(0.5)
             continue
 
-        for event in worker.drain_events():
-            await handler.inject_environment_message(_format_event(event), trigger_response=False)
-            await asyncio.sleep(event_debounce_s)
+        if worker is not None:
+            for event in worker.drain_events():
+                await handler.inject_environment_message(_format_event(event), trigger_response=False)
+                await asyncio.sleep(event_debounce_s)
 
-        now = time.monotonic()
-        snapshot = worker.snapshot()
-        current_set = frozenset(_visible_key(target.name) for target in snapshot.visible)
-        if current_set != last_snapshot_set and now - last_snapshot_at >= snapshot_interval_s:
-            await handler.inject_environment_message(_format_snapshot(snapshot, now=now), trigger_response=False)
-            last_snapshot_at = now
-            last_snapshot_set = current_set
+        if speaker_attribution_worker is not None:
+            drain_speech_events = getattr(speaker_attribution_worker, "drain_events", None)
+            if callable(drain_speech_events):
+                for segment in drain_speech_events():
+                    await handler.inject_environment_message(format_attributed_speech(segment), trigger_response=False)
+
+        if worker is not None:
+            now = time.monotonic()
+            snapshot = worker.snapshot()
+            current_set = frozenset(_visible_key(target.name) for target in snapshot.visible)
+            if current_set != last_snapshot_set and now - last_snapshot_at >= snapshot_interval_s:
+                await handler.inject_environment_message(_format_snapshot(snapshot, now=now), trigger_response=False)
+                last_snapshot_at = now
+                last_snapshot_set = current_set
 
         await asyncio.sleep(0.5)
 
@@ -104,8 +114,16 @@ def _visible_key(name: str | None) -> str:
     return name if name else "unknown"
 
 
-def _assistant_is_speaking(worker: FaceIdentifierWorker) -> bool:
-    camera_worker = getattr(worker, "camera_worker", None)
+run_situational_awareness_stream = run_perception_stream
+
+
+def _assistant_is_speaking(
+    worker: FaceIdentifierWorker | None,
+    speaker_attribution_worker: object | None = None,
+) -> bool:
+    camera_worker = getattr(worker, "camera_worker", None) if worker is not None else None
+    if camera_worker is None and speaker_attribution_worker is not None:
+        camera_worker = getattr(speaker_attribution_worker, "assistant_state_source", None)
     if camera_worker is None:
         return False
     lock = getattr(camera_worker, "_speech_state_lock", None)

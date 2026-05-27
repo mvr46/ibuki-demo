@@ -199,6 +199,9 @@ class GeminiLiveHandler(ConversationHandler):
         self._listening_state = listening
         self.deps.movement_manager.set_listening(listening)
         self._notify_camera_worker("notify_user_speech_started" if listening else "notify_user_speech_stopped")
+        self._notify_speaker_attribution_worker(
+            "notify_user_speech_started" if listening else "notify_user_speech_stopped"
+        )
 
     def _notify_camera_worker(self, method_name: str) -> None:
         """Best-effort notification for camera-owned speaker tracking state."""
@@ -208,6 +211,16 @@ class GeminiLiveHandler(ConversationHandler):
         method = getattr(camera_worker, method_name, None)
         if callable(method):
             method()
+
+    def _notify_speaker_attribution_worker(self, method_name: str, *args: Any) -> Any:
+        """Best-effort notification for multimodal speaker attribution state."""
+        speaker_worker = getattr(self.deps, "speaker_attribution_worker", None)
+        if speaker_worker is None:
+            return None
+        method = getattr(speaker_worker, method_name, None)
+        if callable(method):
+            return method(*args)
+        return None
 
     async def _flush_transcript_chunks(self, role: str, chunks: list[str]) -> None:
         """Emit one finalized transcript message for the current turn."""
@@ -221,6 +234,7 @@ class GeminiLiveHandler(ConversationHandler):
 
         if role == "user":
             self._notify_camera_worker("notify_user_transcript")
+            self._notify_speaker_attribution_worker("notify_user_transcript", transcript)
         await self.output_queue.put(AdditionalOutputs({"role": role, "content": transcript}))
 
     async def _mark_model_response_started(self) -> None:
@@ -228,6 +242,7 @@ class GeminiLiveHandler(ConversationHandler):
         await self._flush_transcript_chunks("user", self._pending_user_transcript_chunks)
         self._set_listening_state(False)
         self._notify_camera_worker("notify_assistant_audio_started")
+        self._notify_speaker_attribution_worker("notify_assistant_audio_started")
 
     async def _handle_interruption(self) -> None:
         """Stop current playback and preserve any transcript already spoken."""
@@ -246,6 +261,7 @@ class GeminiLiveHandler(ConversationHandler):
         await self._flush_transcript_chunks("assistant", self._pending_assistant_transcript_chunks)
         self._set_listening_state(False)
         self._notify_camera_worker("notify_assistant_audio_done")
+        self._notify_speaker_attribution_worker("notify_assistant_audio_done")
         if self.deps.head_wobbler is not None:
             self.deps.head_wobbler.request_reset_after_current_audio()
 
@@ -577,11 +593,15 @@ class GeminiLiveHandler(ConversationHandler):
                 # Start video sender if camera is available
                 if self.deps.camera_worker is not None:
                     video_task = asyncio.create_task(self._video_sender_loop(), name="gemini-video-sender")
-                if self.deps.face_identity_worker is not None:
+                if self.deps.face_identity_worker is not None or self.deps.speaker_attribution_worker is not None:
                     from reachy_mini_conversation_app.perception_stream import run_perception_stream
 
                     perception_task = asyncio.create_task(
-                        run_perception_stream(self.deps.face_identity_worker, self),
+                        run_perception_stream(
+                            self.deps.face_identity_worker,
+                            self,
+                            speaker_attribution_worker=self.deps.speaker_attribution_worker,
+                        ),
                         name="perception-stream",
                     )
 
@@ -641,6 +661,7 @@ class GeminiLiveHandler(ConversationHandler):
                                     logger.debug("User transcript chunk: %s", transcript)
                                     self._pending_user_transcript_chunks.append(transcript)
                                     self._notify_camera_worker("notify_user_partial")
+                                    self._notify_speaker_attribution_worker("notify_user_partial", transcript)
                                     self._set_listening_state(True)
 
                                 # Handle output transcription (model speech)
