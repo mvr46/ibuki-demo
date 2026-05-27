@@ -5,6 +5,7 @@ stop_emotion
 camera
 who_is_here
 remember_person
+look_at_person
 idle_do_nothing
 head_tracking
 move_head

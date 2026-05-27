@@ -297,6 +297,9 @@ def run(
 
             face_identity_service = build_default_face_identity_service()
             face_identity_worker = FaceIdentifierWorker(camera_worker, face_identity_service.identifier)
+            set_face_identity_worker = getattr(camera_worker, "set_face_identity_worker", None)
+            if callable(set_face_identity_worker):
+                set_face_identity_worker(face_identity_worker)
             logger.info("Face recognition worker initialized")
         except Exception as e:
             logger.warning("Face recognition worker unavailable: %s", e)

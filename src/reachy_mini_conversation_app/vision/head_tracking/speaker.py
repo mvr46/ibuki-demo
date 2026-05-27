@@ -10,7 +10,10 @@ from typing import Any, Callable
 from dataclasses import dataclass
 from urllib.request import urlopen
 
+import numpy as np
+
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
+from reachy_mini_conversation_app.vision.face_recognition_lib import IOU_SAME_FACE, iou
 
 
 logger = logging.getLogger(__name__)
@@ -129,6 +132,7 @@ class SpeakerSelectionConfig:
     audio_weight: float = 0.55
     visual_weight: float = 0.30
     continuity_weight: float = 0.15
+    name_match_bonus: float = 0.75
 
 
 @dataclass
@@ -150,6 +154,7 @@ class SpeakerSelectionResult:
     audio_agreement: float
     visual_confidence: float
     temporal_continuity: float
+    name_match: bool = False
 
 
 def select_speaker(
@@ -158,28 +163,32 @@ def select_speaker(
     audio_x_offset: float | None,
     state: SpeakerSelectionState | None = None,
     config: SpeakerSelectionConfig = SpeakerSelectionConfig(),
+    prefer_name: str | None = None,
+    identity_targets: list[object] | None = None,
 ) -> SpeakerSelectionResult:
     """Select the likely active speaker from visible face targets and audio."""
-    candidates: list[tuple[float, int, HeadTrackerTarget, float, float, float]] = []
+    candidates: list[tuple[float, int, HeadTrackerTarget, float, float, float, bool]] = []
     for index, target in enumerate(targets):
         audio_agreement = _audio_agreement(target.x_offset, audio_x_offset)
         visual_confidence = _clamp_score(target.confidence)
         continuity = _temporal_continuity(target.x_offset, state)
+        name_match = _target_matches_name(target, prefer_name, identity_targets)
         score = (
             audio_agreement * config.audio_weight
             + visual_confidence * config.visual_weight
             + continuity * config.continuity_weight
+            + (config.name_match_bonus if name_match else 0.0)
         )
-        candidates.append((score, index, target, audio_agreement, visual_confidence, continuity))
+        candidates.append((score, index, target, audio_agreement, visual_confidence, continuity, name_match))
 
     if not candidates:
         return SpeakerSelectionResult(None, 0.0, 0.0, 0.0)
 
     candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
-    _, _, selected, audio_agreement, visual_confidence, continuity = candidates[0]
+    _, _, selected, audio_agreement, visual_confidence, continuity, name_match = candidates[0]
     if state is not None:
         state.remember(selected)
-    return SpeakerSelectionResult(selected, audio_agreement, visual_confidence, continuity)
+    return SpeakerSelectionResult(selected, audio_agreement, visual_confidence, continuity, name_match)
 
 
 class DaemonDoAPoller:
@@ -264,6 +273,43 @@ def _temporal_continuity(x_offset: float, state: SpeakerSelectionState | None) -
     if state is None or state.last_x_offset is None:
         return 0.0
     return _clamp_score(1.0 - abs(float(x_offset) - state.last_x_offset) / 2.0)
+
+
+def _target_matches_name(
+    target: HeadTrackerTarget,
+    prefer_name: str | None,
+    identity_targets: list[object] | None,
+) -> bool:
+    if not prefer_name or not identity_targets:
+        return False
+    preferred = prefer_name.strip().casefold()
+    if not preferred:
+        return False
+
+    target_box = _target_xyxy(target)
+    for identity_target in identity_targets:
+        if str(getattr(identity_target, "name", "") or "").strip().casefold() != preferred:
+            continue
+        visible_target = getattr(identity_target, "target", None)
+        if not isinstance(visible_target, HeadTrackerTarget):
+            continue
+        if iou(target_box, _target_xyxy(visible_target)) >= IOU_SAME_FACE:
+            return True
+    return False
+
+
+def _target_xyxy(target: HeadTrackerTarget) -> np.ndarray:
+    x, y, width, height = target.bbox
+    frame_width, frame_height = target.frame_size
+    return np.array(
+        [
+            x * frame_width,
+            y * frame_height,
+            (x + width) * frame_width,
+            (y + height) * frame_height,
+        ],
+        dtype=np.float32,
+    )
 
 
 def _clamp_unit(value: float) -> float:

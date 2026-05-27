@@ -9,6 +9,7 @@ import pytest
 
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies, get_active_tool_specs
 from reachy_mini_conversation_app.tools.who_is_here import WhoIsHere
+from reachy_mini_conversation_app.tools.look_at_person import LookAtPerson
 from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 from reachy_mini_conversation_app.tools.remember_person import RememberPerson
@@ -33,6 +34,9 @@ class _FakeIdentityWorker:
     def identify(self, frame: np.ndarray, targets: list[HeadTrackerTarget]) -> list[IdentifiedTarget]:
         assert targets
         return self.identified
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(visible=tuple(self.identified))
 
 
 def _target(x_offset: float, area: float = 0.09) -> HeadTrackerTarget:
@@ -112,6 +116,46 @@ async def test_remember_person_saves_largest_unknown_face() -> None:
     assert identity_worker.identifier.db.saved[0][0] == "Bob"
 
 
+@pytest.mark.asyncio
+async def test_look_at_person_sets_named_focus_when_visible() -> None:
+    """look_at_person should set named speaker focus for a visible person."""
+    alice = IdentifiedTarget(
+        target=_target(0.45),
+        name="Alice",
+        similarity=0.9234,
+        embedding=np.array([1.0, 0.0], dtype=np.float32),
+    )
+    deps = _deps(_FakeIdentityWorker([alice]))
+
+    result = await LookAtPerson()(deps, name="alice")
+
+    assert result == {
+        "status": "looking_at",
+        "name": "Alice",
+        "x_offset": 0.45,
+        "y_offset": 0.0,
+        "similarity": 0.923,
+    }
+    deps.camera_worker.set_speaker_focus_name.assert_called_once_with("Alice")
+
+
+@pytest.mark.asyncio
+async def test_look_at_person_reports_when_name_not_visible() -> None:
+    """look_at_person should not set focus when the requested person is absent."""
+    bob = IdentifiedTarget(
+        target=_target(-0.35),
+        name="Bob",
+        similarity=0.8,
+        embedding=np.array([1.0, 0.0], dtype=np.float32),
+    )
+    deps = _deps(_FakeIdentityWorker([bob]))
+
+    result = await LookAtPerson()(deps, name="Alice")
+
+    assert result == {"error": "Alice is not currently visible", "visible_names": ["Bob"]}
+    deps.camera_worker.set_speaker_focus_name.assert_not_called()
+
+
 def test_face_tools_only_active_when_identity_worker_is_wired() -> None:
     """Face identity tools should be hidden until the identity worker is available."""
     inactive_names = {spec["name"] for spec in get_active_tool_specs(_deps(None))}
@@ -119,5 +163,7 @@ def test_face_tools_only_active_when_identity_worker_is_wired() -> None:
 
     assert "who_is_here" not in inactive_names
     assert "remember_person" not in inactive_names
+    assert "look_at_person" not in inactive_names
     assert "who_is_here" in active_names
     assert "remember_person" in active_names
+    assert "look_at_person" in active_names

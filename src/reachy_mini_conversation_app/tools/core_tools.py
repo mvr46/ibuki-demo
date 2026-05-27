@@ -289,7 +289,9 @@ def get_active_tool_specs(deps: ToolDependencies) -> list[Dict[str, Any]]:
     if not (deps.camera_worker and deps.camera_worker.head_tracker):
         exclusion_list.append("head_tracking")
     if deps.face_identity_worker is None:
-        exclusion_list.extend(["who_is_here", "remember_person"])
+        exclusion_list.extend(["who_is_here", "remember_person", "look_at_person"])
+    if deps.camera_worker is None:
+        exclusion_list.append("look_at_person")
     return get_tool_specs(exclusion_list)
 
 

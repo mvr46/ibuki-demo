@@ -83,6 +83,9 @@ class CameraWorker:
         self._sound_search_target: SoundTarget | None = None
         self._sound_search_started_at: float | None = None
         self._sound_search_last_seen_at: float | None = None
+        self._speaker_focus_name: str | None = None
+        self._speaker_focus_lock = threading.Lock()
+        self._face_identity_worker: object | None = None
         self._last_sound_debug_at = 0.0
         self._last_sound_debug_key: tuple[str, str] | None = None
         self._doa_poller = doa_poller if doa_poller is not None else self._build_doa_poller()
@@ -158,6 +161,25 @@ class CameraWorker:
         """Enable/disable head tracking."""
         self.is_head_tracking_enabled = enabled
         logger.info(f"Head tracking {'enabled' if enabled else 'disabled'}")
+
+    def set_face_identity_worker(self, face_identity_worker: object | None) -> None:
+        """Attach the face identity worker used for named speaker preference."""
+        self._face_identity_worker = face_identity_worker
+
+    def set_speaker_focus_name(self, name: str | None) -> None:
+        """Prefer a visible named person during speaker selection."""
+        cleaned_name = None if name is None else name.strip()
+        with self._speaker_focus_lock:
+            self._speaker_focus_name = cleaned_name or None
+        if cleaned_name:
+            logger.info("Speaker focus name set to %s", cleaned_name)
+        else:
+            logger.info("Speaker focus name cleared")
+
+    def get_speaker_focus_name(self) -> str | None:
+        """Return the currently preferred speaker name."""
+        with self._speaker_focus_lock:
+            return self._speaker_focus_name
 
     def start(self) -> None:
         """Start the camera worker loop in a thread."""
@@ -346,6 +368,19 @@ class CameraWorker:
             logger.error("Head target detection failed: %s", exc)
             return []
         return [target for target in targets if isinstance(target, HeadTrackerTarget)]
+
+    def _identity_targets(self) -> list[object]:
+        """Return latest identity-enriched visible targets, if available."""
+        if self._face_identity_worker is None:
+            return []
+        snapshot = getattr(self._face_identity_worker, "snapshot", None)
+        if not callable(snapshot):
+            return []
+        try:
+            return list(snapshot().visible)
+        except Exception as exc:
+            logger.debug("Face identity snapshot unavailable for speaker selection: %s", exc)
+            return []
 
     def _speaker_focus_pixels(self, target: HeadTrackerTarget) -> tuple[int, int]:
         """Return a subtle image point for speaker focus."""
@@ -548,6 +583,8 @@ class CameraWorker:
                     else None
                 ),
                 state=self._speaker_selection_state,
+                prefer_name=self.get_speaker_focus_name(),
+                identity_targets=self._identity_targets(),
             ).target
             if selected is not None:
                 self._lock_visual_speaker(selected, current_time)
