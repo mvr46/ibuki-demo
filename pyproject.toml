@@ -49,6 +49,10 @@ yolo_vision = [
 mediapipe_vision = [
   "mediapipe==0.10.14",
 ]
+face_recognition = [
+  "insightface>=0.7",
+  "onnxruntime",
+]
 all_vision = [
   "accelerate>=1.13.0",
   "torch>=2.1",
@@ -58,6 +62,8 @@ all_vision = [
   "supervision",
   "opencv-python>=4.13.0.92",
   "mediapipe==0.10.14",
+  "insightface>=0.7",
+  "onnxruntime",
 ]
 
 [dependency-groups]
@@ -75,11 +81,14 @@ dev = [
 reachy-mini-conversation-app = "reachy_mini_conversation_app.main:main"
 
 [tool.uv]
-dependency-metadata = [
-    # Upstream metadata currently marks `gstreamer-msvc-runtime` as unconditional.
-    # It should only be required on Windows. Temp fix.
-    { name = "gstreamer-libs", version = "1.28.1", requires-dist = ["gstreamer-msvc-runtime; sys_platform == 'win32'", "setuptools"] },
-]
+exclude-dependencies = ["pygobject"]
+
+[[tool.uv.dependency-metadata]]
+# Upstream metadata currently marks `gstreamer-msvc-runtime` as unconditional.
+# It should only be required on Windows. Temp fix.
+name = "gstreamer-libs"
+version = "1.28.1"
+requires-dist = ["gstreamer-msvc-runtime; sys_platform == 'win32'", "setuptools"]
 
 [project.entry-points."reachy_mini_apps"]
 reachy_mini_conversation_app = "reachy_mini_conversation_app.main:ReachyMiniConversationApp"

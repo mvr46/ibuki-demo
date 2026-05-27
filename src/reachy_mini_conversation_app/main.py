@@ -289,10 +289,21 @@ def run(
 
     head_wobbler = HeadWobbler(set_speech_offsets=movement_manager.set_speech_offsets)
 
+    face_identity_worker = None
+    if camera_worker is not None and getattr(camera_worker, "head_tracker", None) is not None:
+        try:
+            from reachy_mini_conversation_app.vision.face_identity import build_default_face_identity_service
+
+            face_identity_worker = build_default_face_identity_service()
+            logger.info("Face recognition service initialized")
+        except Exception as e:
+            logger.warning("Face recognition service unavailable: %s", e)
+
     deps = ToolDependencies(
         reachy_mini=robot,
         movement_manager=movement_manager,
         camera_worker=camera_worker,
+        face_identity_worker=face_identity_worker,
         vision_processor=vision_processor,
         head_wobbler=head_wobbler,
     )
