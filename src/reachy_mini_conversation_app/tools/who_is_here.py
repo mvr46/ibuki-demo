@@ -24,7 +24,9 @@ class WhoIsHere(Tool):
         if deps.face_identity_worker is None:
             return {"error": "Face identity worker not available"}
 
-        identified = await asyncio.to_thread(identify_from_camera, deps.camera_worker, deps.face_identity_worker)
+        identified = _snapshot_visible(deps.face_identity_worker)
+        if identified is None:
+            identified = await asyncio.to_thread(identify_from_camera, deps.camera_worker, deps.face_identity_worker)
         logger.info("Tool call: who_is_here visible=%d", len(identified))
         return {"people": [_target_payload(target) for target in identified]}
 
@@ -39,3 +41,10 @@ def _target_payload(target: IdentifiedTarget) -> dict[str, Any]:
         "similarity": round(float(target.similarity), 3),
         "seconds_in_view": round(seconds_in_view, 1),
     }
+
+
+def _snapshot_visible(identity_worker: object) -> list[IdentifiedTarget] | None:
+    snapshot = getattr(identity_worker, "snapshot", None)
+    if not callable(snapshot):
+        return None
+    return list(snapshot().visible)

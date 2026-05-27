@@ -292,12 +292,14 @@ def run(
     face_identity_worker = None
     if camera_worker is not None and getattr(camera_worker, "head_tracker", None) is not None:
         try:
+            from reachy_mini_conversation_app.face_identity_worker import FaceIdentifierWorker
             from reachy_mini_conversation_app.vision.face_identity import build_default_face_identity_service
 
-            face_identity_worker = build_default_face_identity_service()
-            logger.info("Face recognition service initialized")
+            face_identity_service = build_default_face_identity_service()
+            face_identity_worker = FaceIdentifierWorker(camera_worker, face_identity_service.identifier)
+            logger.info("Face recognition worker initialized")
         except Exception as e:
-            logger.warning("Face recognition service unavailable: %s", e)
+            logger.warning("Face recognition worker unavailable: %s", e)
 
     deps = ToolDependencies(
         reachy_mini=robot,
@@ -418,6 +420,8 @@ def run(
     head_wobbler.start()
     if camera_worker:
         camera_worker.start()
+    if face_identity_worker:
+        face_identity_worker.start()
 
     def poll_stop_event() -> None:
         """Poll the stop event to allow graceful shutdown."""
@@ -440,6 +444,8 @@ def run(
     finally:
         movement_manager.stop()
         head_wobbler.stop()
+        if face_identity_worker:
+            face_identity_worker.stop()
         if camera_worker:
             camera_worker.stop()
 

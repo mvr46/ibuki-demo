@@ -31,7 +31,9 @@ class RememberPerson(Tool):
         if deps.face_identity_worker is None:
             return {"error": "Face identity worker not available"}
 
-        identified = await asyncio.to_thread(identify_from_camera, deps.camera_worker, deps.face_identity_worker)
+        identified = _snapshot_visible(deps.face_identity_worker)
+        if identified is None:
+            identified = await asyncio.to_thread(identify_from_camera, deps.camera_worker, deps.face_identity_worker)
         unknown = _largest_unknown(identified)
         if unknown is None:
             return {"error": "No unknown face is currently visible"}
@@ -54,3 +56,10 @@ def _largest_unknown(identified: list[IdentifiedTarget]) -> IdentifiedTarget | N
     if not unknown:
         return None
     return max(unknown, key=lambda target: target.target.area)
+
+
+def _snapshot_visible(identity_worker: object) -> list[IdentifiedTarget] | None:
+    snapshot = getattr(identity_worker, "snapshot", None)
+    if not callable(snapshot):
+        return None
+    return list(snapshot().visible)

@@ -698,12 +698,20 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                 pass
 
             response_sender_task: asyncio.Task[None] | None = None
+            perception_task: asyncio.Task[None] | None = None
             try:
                 # Start the background tool manager
                 self.tool_manager.start_up(tool_callbacks=[self._handle_tool_result])
 
                 # Start the response sender worker
                 response_sender_task = asyncio.create_task(self._response_sender_loop(), name="response-sender")
+                if self.deps.face_identity_worker is not None:
+                    from reachy_mini_conversation_app.perception_stream import run_perception_stream
+
+                    perception_task = asyncio.create_task(
+                        run_perception_stream(self.deps.face_identity_worker, self),
+                        name="perception-stream",
+                    )
 
                 async for event in self.connection:
                     logger.debug("Realtime event: %s", event.type)
@@ -919,6 +927,12 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         await response_sender_task
                     except asyncio.CancelledError:
                         pass
+                if perception_task is not None:
+                    perception_task.cancel()
+                    try:
+                        await perception_task
+                    except asyncio.CancelledError:
+                        pass
 
                 # Stop background tool manager tasks (listener + cleanup) in all paths.
                 await self.tool_manager.shutdown()
@@ -1035,19 +1049,25 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         logger.debug("Sending idle signal")
         self.is_idle_tool_call = True
         timestamp_msg = f"[Idle time update: {self.format_timestamp()} - No activity for {idle_duration:.1f}s] You've been idle for a while. Feel free to get creative - dance, show an emotion, look around, call idle_do_nothing to stay still and silent, or just be yourself!"
-        if not self.connection:
-            logger.debug("No connection, cannot send idle signal")
-            return
-        await self.connection.conversation.item.create(
-            item={
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": timestamp_msg}],
-            },
-        )
+        await self.inject_environment_message(timestamp_msg)
         await self._safe_response_create(
             response=RealtimeResponseCreateParamsParam(
                 instructions="You MUST respond with function calls only - no speech or text. Choose appropriate actions for idle behavior. Use idle_do_nothing only if you intentionally want no movement or sound during this idle turn.",
                 tool_choice="required",
             ),
         )
+
+    async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
+        """Inject an ambient user-role environment message into the realtime conversation."""
+        if not self.connection:
+            logger.debug("No connection, cannot inject environment message")
+            return
+        await self.connection.conversation.item.create(
+            item={
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        )
+        if trigger_response:
+            await self._safe_response_create()

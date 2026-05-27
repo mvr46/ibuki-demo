@@ -569,6 +569,7 @@ class GeminiLiveHandler(ConversationHandler):
             logger.info("Gemini Live session connected successfully")
 
             video_task: asyncio.Task[None] | None = None
+            perception_task: asyncio.Task[None] | None = None
             try:
                 # Start the background tool manager
                 self.tool_manager.start_up(tool_callbacks=[self._handle_tool_result])
@@ -576,6 +577,13 @@ class GeminiLiveHandler(ConversationHandler):
                 # Start video sender if camera is available
                 if self.deps.camera_worker is not None:
                     video_task = asyncio.create_task(self._video_sender_loop(), name="gemini-video-sender")
+                if self.deps.face_identity_worker is not None:
+                    from reachy_mini_conversation_app.perception_stream import run_perception_stream
+
+                    perception_task = asyncio.create_task(
+                        run_perception_stream(self.deps.face_identity_worker, self),
+                        name="perception-stream",
+                    )
 
                 # session.receive() yields responses for the current turn then completes.
                 # We loop so the session stays alive across multiple conversation turns.
@@ -663,6 +671,12 @@ class GeminiLiveHandler(ConversationHandler):
                         await video_task
                     except asyncio.CancelledError:
                         pass
+                if perception_task is not None:
+                    perception_task.cancel()
+                    try:
+                        await perception_task
+                    except asyncio.CancelledError:
+                        pass
                 await self.tool_manager.shutdown()
 
     async def receive(self, frame: Tuple[int, NDArray[np.int16]]) -> None:
@@ -748,11 +762,15 @@ class GeminiLiveHandler(ConversationHandler):
             "You've been idle for a while. Feel free to get creative - dance, show an emotion, "
             "look around, call idle_do_nothing to stay still and silent, or just be yourself!"
         )
+        await self.inject_environment_message(timestamp_msg)
+
+    async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
+        """Inject an ambient text message into the Gemini Live session."""
         if not self.session:
-            logger.debug("No session, cannot send idle signal")
+            logger.debug("No session, cannot inject environment message")
             return
 
-        await self.session.send_realtime_input(text=timestamp_msg)
+        await self.session.send_realtime_input(text=text)
 
     async def get_available_voices(self) -> list[str]:
         """Return the list of available Gemini voices."""
