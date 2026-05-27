@@ -660,7 +660,20 @@ function visibleLogs(): LogEntry[] {
   return visible;
 }
 
-function renderLogs(): void {
+const MAX_VISIBLE_LOGS = 300;
+const SCROLL_BOTTOM_THRESHOLD = 40;
+const USER_SCROLL_WINDOW_MS = 400;
+
+let lastUserScrollAt = 0;
+
+function entryPassesFilters(entry: LogEntry): boolean {
+  const search = logUi.search.trim().toLowerCase();
+  if (logUi.filter !== "ALL" && entryLevel(entry) !== logUi.filter) return false;
+  if (search && !entry.message.toLowerCase().includes(search)) return false;
+  return true;
+}
+
+function updateLogCounts(): void {
   let info = 0;
   let warn = 0;
   let err = 0;
@@ -673,24 +686,57 @@ function renderLogs(): void {
   setCount(elements.countInfo, info);
   setCount(elements.countWarn, warn);
   setCount(elements.countErr, err);
+}
 
-  const items = visibleLogs().slice(-300);
+function showEmptyLogPlaceholder(): void {
+  const empty = document.createElement("li");
+  empty.className = "log-empty";
+  empty.textContent = "Waiting for events...";
+  elements.logs.replaceChildren(empty);
+}
+
+function updateJumpLatest(): void {
+  if (logUi.autoScroll) {
+    elements.jumpLatest.hidden = true;
+    logUi.newSincePaused = 0;
+  } else if (logUi.newSincePaused > 0) {
+    elements.jumpLatestCount.textContent = String(logUi.newSincePaused);
+    elements.jumpLatest.hidden = false;
+  } else {
+    elements.jumpLatest.hidden = true;
+  }
+}
+
+function scrollLogsToBottom(): void {
+  elements.logs.scrollTop = elements.logs.scrollHeight;
+}
+
+function renderLogs(): void {
+  updateLogCounts();
+
+  const items = visibleLogs().slice(-MAX_VISIBLE_LOGS);
   if (!items.length) {
-    const empty = document.createElement("li");
-    empty.className = "log-empty";
-    empty.textContent = "Waiting for events...";
-    elements.logs.replaceChildren(empty);
+    showEmptyLogPlaceholder();
   } else {
     elements.logs.replaceChildren(...items.map(renderLog));
   }
 
   if (logUi.autoScroll) {
-    elements.logs.scrollTop = elements.logs.scrollHeight;
+    scrollLogsToBottom();
     logUi.newSincePaused = 0;
-    elements.jumpLatest.hidden = true;
-  } else if (logUi.newSincePaused > 0) {
-    elements.jumpLatestCount.textContent = String(logUi.newSincePaused);
-    elements.jumpLatest.hidden = false;
+  }
+  updateJumpLatest();
+}
+
+function appendLogToDom(entry: LogEntry): void {
+  if (!entryPassesFilters(entry)) return;
+  const placeholder = elements.logs.firstElementChild;
+  if (placeholder && placeholder.classList.contains("log-empty")) {
+    elements.logs.replaceChildren();
+  }
+  elements.logs.appendChild(renderLog(entry));
+  while (elements.logs.childElementCount > MAX_VISIBLE_LOGS) {
+    elements.logs.removeChild(elements.logs.firstElementChild!);
   }
 }
 
@@ -719,14 +765,29 @@ function setCount(el: HTMLElement, count: number): void {
 }
 
 function isLogAtBottom(): boolean {
-  return elements.logs.scrollHeight - elements.logs.scrollTop - elements.logs.clientHeight < 12;
+  return (
+    elements.logs.scrollHeight - elements.logs.scrollTop - elements.logs.clientHeight <
+    SCROLL_BOTTOM_THRESHOLD
+  );
+}
+
+function noteUserScrollIntent(): void {
+  lastUserScrollAt = Date.now();
 }
 
 function appendLog(entry: LogEntry): void {
   state.logs = [...state.logs, entry].slice(-500);
   if (state.logs.length < logUi.cleared) logUi.cleared = state.logs.length;
-  if (!logUi.autoScroll) logUi.newSincePaused += 1;
-  renderLogs();
+
+  updateLogCounts();
+  appendLogToDom(entry);
+
+  if (logUi.autoScroll) {
+    scrollLogsToBottom();
+  } else if (entryPassesFilters(entry)) {
+    logUi.newSincePaused += 1;
+  }
+  updateJumpLatest();
 }
 
 function addLocalLog(message: string, level = "INFO", category = "SYSTEM"): void {
@@ -788,18 +849,34 @@ function wireEvents(): void {
   backendInputs().forEach((input) => {
     input.addEventListener("change", renderBackendControls);
   });
+  const userIntentEvents: Array<keyof HTMLElementEventMap> = [
+    "wheel",
+    "touchstart",
+    "pointerdown",
+    "keydown",
+  ];
+  userIntentEvents.forEach((eventName) => {
+    elements.logs.addEventListener(eventName, noteUserScrollIntent, { passive: true });
+  });
+
   elements.logs.addEventListener("scroll", () => {
-    logUi.autoScroll = isLogAtBottom();
-    if (logUi.autoScroll) {
+    if (Date.now() - lastUserScrollAt > USER_SCROLL_WINDOW_MS) return;
+    const atBottom = isLogAtBottom();
+    if (atBottom && !logUi.autoScroll) {
+      logUi.autoScroll = true;
       logUi.newSincePaused = 0;
-      elements.jumpLatest.hidden = true;
+      updateJumpLatest();
+    } else if (!atBottom && logUi.autoScroll) {
+      logUi.autoScroll = false;
+      updateJumpLatest();
     }
   });
+
   elements.jumpLatest.addEventListener("click", () => {
     logUi.autoScroll = true;
     logUi.newSincePaused = 0;
     elements.jumpLatest.hidden = true;
-    elements.logs.scrollTop = elements.logs.scrollHeight;
+    scrollLogsToBottom();
   });
   elements.clearLogs.addEventListener("click", () => {
     logUi.cleared = state.logs.length;
@@ -809,10 +886,10 @@ function wireEvents(): void {
     logUi.search = elements.logSearch.value;
     renderLogs();
   });
-  document.querySelectorAll<HTMLButtonElement>(".filter-chip").forEach((chip) => {
+  document.querySelectorAll<HTMLButtonElement>(".filter-tab").forEach((chip) => {
     chip.addEventListener("click", () => {
       logUi.filter = (chip.dataset.level as LevelFilter) || "ALL";
-      document.querySelectorAll(".filter-chip").forEach((item) => {
+      document.querySelectorAll(".filter-tab").forEach((item) => {
         item.classList.toggle("is-active", item === chip);
       });
       renderLogs();

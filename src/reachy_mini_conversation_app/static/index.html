@@ -3,155 +3,173 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Reachy Mini dashboard</title>
-    <script type="module" crossorigin src="/static/assets/index-Eg0L7Fal.js"></script>
-    <link rel="stylesheet" crossorigin href="/static/assets/index-DnxEtXHA.css">
+    <title>Reachy Mini</title>
+    <link rel="preconnect" href="https://rsms.me/" />
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <script type="module" crossorigin src="/static/assets/index-BS1q1R6q.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/assets/index-Bn-2b8p8.css">
   </head>
   <body>
     <main id="app">
-      <header class="status-strip">
-        <div class="status-pill">
-          <span class="status-dot" id="camera-dot"></span>
-          <div class="status-pill-text">
-            <span class="label">Camera</span>
-            <strong id="camera-state">checking</strong>
-          </div>
-        </div>
-        <div class="status-pill">
-          <span class="status-dot" id="face-dot"></span>
-          <div class="status-pill-text">
-            <span class="label">Faces</span>
-            <strong id="face-state">checking</strong>
-          </div>
-        </div>
-        <div class="status-pill">
-          <span class="status-dot" id="backend-dot"></span>
-          <div class="status-pill-text">
-            <span class="label">Backend</span>
-            <strong id="backend-state">checking</strong>
-          </div>
-        </div>
-        <div class="status-pill" id="process-pill" hidden>
-          <span class="status-dot" id="process-dot"></span>
-          <div class="status-pill-text">
-            <span class="label">App</span>
-            <strong id="process-state">idle</strong>
-          </div>
-        </div>
+      <header class="topbar">
+        <div class="brand">Reachy Mini</div>
+        <nav class="status-row" aria-label="System status">
+          <span class="status-item">
+            <span class="status-dot" id="camera-dot"></span>
+            <span class="status-key">Camera</span>
+            <span class="status-val" id="camera-state">checking</span>
+          </span>
+          <span class="status-item">
+            <span class="status-dot" id="face-dot"></span>
+            <span class="status-key">Faces</span>
+            <span class="status-val" id="face-state">checking</span>
+          </span>
+          <span class="status-item">
+            <span class="status-dot" id="backend-dot"></span>
+            <span class="status-key">Backend</span>
+            <span class="status-val" id="backend-state">checking</span>
+          </span>
+          <span class="status-item" id="process-pill" hidden>
+            <span class="status-dot" id="process-dot"></span>
+            <span class="status-key">App</span>
+            <span class="status-val" id="process-state">idle</span>
+          </span>
+        </nav>
       </header>
 
       <section class="workspace">
-        <section class="panel naming-panel">
-          <div class="section process-section" id="process-section" hidden>
-            <div class="section-header">App Command</div>
-            <input id="command-input" type="text" autocomplete="off" spellcheck="false" />
-            <div class="button-row">
-              <button type="button" id="start-command" class="btn btn-primary">Start</button>
-              <button type="button" id="stop-command" class="btn btn-secondary">Stop</button>
+        <section class="col col-left">
+          <div class="card camera-card">
+            <div class="card-head">
+              <div class="card-title">Camera</div>
+              <button type="button" id="refresh-face-state" class="link-btn">Refresh</button>
             </div>
-            <p class="status-line" id="command-status"></p>
-          </div>
-
-          <div class="section">
-            <div class="section-header">Face Naming</div>
-            <div class="selected-face" id="selected-face">Select a face in the camera feed.</div>
-            <label for="face-name" class="field-label">Name</label>
-            <input id="face-name" type="text" placeholder="Alice" autocomplete="off" />
-            <button type="button" id="save-face" class="btn btn-primary btn-block">Save Face</button>
-            <p class="status-line" id="face-save-status"></p>
-          </div>
-
-          <div class="section">
-            <div class="section-header">Saved People</div>
-            <ol id="people-list" class="people-list"></ol>
-          </div>
-
-          <details class="settings-drawer" open>
-            <summary>Conversation Settings</summary>
-            <div class="section compact-section">
-              <div class="section-header">Backend</div>
-              <div class="backend-grid" id="backend-grid">
-                <label class="choice"><input type="radio" name="backend" value="huggingface" /> Hugging Face</label>
-                <label class="choice"><input type="radio" name="backend" value="openai" /> OpenAI</label>
-                <label class="choice"><input type="radio" name="backend" value="gemini" /> Gemini</label>
-              </div>
-              <input id="api-key" type="password" placeholder="API key" autocomplete="off" />
-              <div class="hf-grid" id="hf-fields">
-                <select id="hf-mode">
-                  <option value="deployed">Built-in server</option>
-                  <option value="local">Local websocket</option>
-                </select>
-                <input id="hf-host" type="text" placeholder="localhost" />
-                <input id="hf-port" type="number" min="1" max="65535" value="8765" />
-              </div>
-              <button type="button" id="save-backend" class="btn btn-secondary btn-block">Save Backend</button>
-              <p class="status-line" id="backend-status"></p>
+            <div class="video-shell" id="video-shell">
+              <img id="camera-feed" alt="Reachy camera feed" />
+              <div id="face-overlay" class="face-overlay"></div>
+              <div id="camera-empty" class="camera-empty">No camera frame yet.</div>
             </div>
-
-            <div class="section compact-section">
-              <div class="section-header">Personality</div>
-              <select id="personality-select"></select>
-              <div class="button-row">
-                <button type="button" id="apply-personality" class="btn btn-secondary">Apply</button>
-                <button type="button" id="persist-personality" class="btn btn-secondary">Use on Start</button>
-              </div>
-              <input id="personality-name" type="text" placeholder="new_profile" />
-              <textarea id="instructions-ta" rows="5" placeholder="Instructions"></textarea>
-              <textarea id="tools-ta" rows="4" placeholder="tools.txt"></textarea>
-              <select id="voice-select"></select>
-              <div class="button-row">
-                <button type="button" id="apply-voice" class="btn btn-secondary">Apply Voice</button>
-                <button type="button" id="new-personality" class="btn btn-secondary">New</button>
-              </div>
-              <div id="tools-available" class="checkbox-grid"></div>
-              <button type="button" id="save-personality" class="btn btn-primary btn-block">Save Personality</button>
-              <p class="status-line" id="personality-status"></p>
-            </div>
-          </details>
-        </section>
-
-        <section class="panel camera-panel">
-          <div class="camera-header">
-            <div>
-              <div class="section-header">Reachy Camera</div>
-              <p id="camera-help">Waiting for a frame.</p>
-            </div>
-            <button type="button" id="refresh-face-state" class="btn btn-secondary btn-tiny">Refresh</button>
+            <p id="camera-help" class="muted">Waiting for a frame.</p>
           </div>
-          <div class="video-shell" id="video-shell">
-            <img id="camera-feed" alt="Reachy camera feed" />
-            <div id="face-overlay" class="face-overlay"></div>
-            <div id="camera-empty" class="camera-empty">No camera frame yet.</div>
-          </div>
-        </section>
 
-        <section class="panel log-panel">
-          <div class="log-header">
-            <div class="log-title-row">
-              <div class="section-header">Live Logs</div>
+          <div class="card log-card">
+            <div class="card-head log-head">
+              <div class="card-title">Live logs</div>
               <div class="log-counts">
-                <span class="count-chip count-chip--info" id="count-info">0</span>
-                <span class="count-chip count-chip--warn" id="count-warn">0</span>
-                <span class="count-chip count-chip--err" id="count-err">0</span>
+                <span class="count count-info" id="count-info">0</span>
+                <span class="count count-warn" id="count-warn">0</span>
+                <span class="count count-err" id="count-err">0</span>
               </div>
             </div>
             <div class="log-toolbar">
               <input id="log-search" type="text" placeholder="Filter logs..." autocomplete="off" spellcheck="false" />
               <div class="log-filters" role="tablist">
-                <button type="button" class="filter-chip is-active" data-level="ALL">All</button>
-                <button type="button" class="filter-chip" data-level="INFO">Info</button>
-                <button type="button" class="filter-chip filter-chip--warn" data-level="WARNING">Warn</button>
-                <button type="button" class="filter-chip filter-chip--err" data-level="ERROR">Error</button>
+                <button type="button" class="filter-tab is-active" data-level="ALL">All</button>
+                <button type="button" class="filter-tab" data-level="INFO">Info</button>
+                <button type="button" class="filter-tab" data-level="WARNING">Warn</button>
+                <button type="button" class="filter-tab" data-level="ERROR">Error</button>
               </div>
-              <button type="button" id="clear-logs" class="btn btn-secondary btn-tiny">Clear</button>
+              <button type="button" id="clear-logs" class="link-btn">Clear</button>
+            </div>
+            <div class="log-body">
+              <ol id="logs"></ol>
+              <button type="button" id="jump-latest" class="jump-latest" hidden>
+                <span aria-hidden="true">↓</span>
+                <span id="jump-latest-count">0</span>
+                <span>new</span>
+              </button>
             </div>
           </div>
-          <div class="log-body">
-            <ol id="logs"></ol>
-            <button type="button" id="jump-latest" class="jump-latest" hidden>
-              <span id="jump-latest-count">0</span> new
-            </button>
+        </section>
+
+        <section class="col col-right">
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">Face naming</div>
+            </div>
+            <div class="selected-face muted" id="selected-face">Select a face in the camera feed.</div>
+            <div class="field">
+              <label for="face-name" class="field-label">Name</label>
+              <input id="face-name" type="text" placeholder="Alice" autocomplete="off" />
+            </div>
+            <button type="button" id="save-face" class="btn btn-primary btn-block">Save face</button>
+            <p class="status-line" id="face-save-status"></p>
           </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">Saved people</div>
+            </div>
+            <ol id="people-list" class="people-list"></ol>
+          </div>
+
+          <details class="card settings-card" id="settings-drawer">
+            <summary>
+              <span class="card-title">Settings</span>
+              <span class="drawer-caret" aria-hidden="true">▾</span>
+            </summary>
+            <div class="settings-body">
+              <div class="settings-section" id="process-section" hidden>
+                <div class="settings-section-title">App command</div>
+                <div class="field">
+                  <input id="command-input" type="text" autocomplete="off" spellcheck="false" />
+                </div>
+                <div class="button-row">
+                  <button type="button" id="start-command" class="btn btn-primary">Start</button>
+                  <button type="button" id="stop-command" class="btn btn-secondary">Stop</button>
+                </div>
+                <p class="status-line" id="command-status"></p>
+              </div>
+
+              <div class="settings-section">
+                <div class="settings-section-title">Backend</div>
+                <div class="backend-grid" id="backend-grid">
+                  <label class="choice"><input type="radio" name="backend" value="huggingface" /> <span>Hugging Face</span></label>
+                  <label class="choice"><input type="radio" name="backend" value="openai" /> <span>OpenAI</span></label>
+                  <label class="choice"><input type="radio" name="backend" value="gemini" /> <span>Gemini</span></label>
+                </div>
+                <div class="field">
+                  <input id="api-key" type="password" placeholder="API key" autocomplete="off" />
+                </div>
+                <div class="hf-grid" id="hf-fields">
+                  <select id="hf-mode">
+                    <option value="deployed">Built-in server</option>
+                    <option value="local">Local websocket</option>
+                  </select>
+                  <input id="hf-host" type="text" placeholder="localhost" />
+                  <input id="hf-port" type="number" min="1" max="65535" value="8765" />
+                </div>
+                <button type="button" id="save-backend" class="btn btn-secondary btn-block">Save backend</button>
+                <p class="status-line" id="backend-status"></p>
+              </div>
+
+              <div class="settings-section">
+                <div class="settings-section-title">Personality</div>
+                <div class="field">
+                  <select id="personality-select"></select>
+                </div>
+                <div class="button-row">
+                  <button type="button" id="apply-personality" class="btn btn-secondary">Apply</button>
+                  <button type="button" id="persist-personality" class="btn btn-secondary">Use on start</button>
+                </div>
+                <div class="field">
+                  <input id="personality-name" type="text" placeholder="new_profile" />
+                </div>
+                <textarea id="instructions-ta" rows="5" placeholder="Instructions"></textarea>
+                <textarea id="tools-ta" rows="4" placeholder="tools.txt"></textarea>
+                <div class="field">
+                  <select id="voice-select"></select>
+                </div>
+                <div class="button-row">
+                  <button type="button" id="apply-voice" class="btn btn-secondary">Apply voice</button>
+                  <button type="button" id="new-personality" class="btn btn-secondary">New</button>
+                </div>
+                <div id="tools-available" class="checkbox-grid"></div>
+                <button type="button" id="save-personality" class="btn btn-primary btn-block">Save personality</button>
+                <p class="status-line" id="personality-status"></p>
+              </div>
+            </div>
+          </details>
         </section>
       </section>
     </main>
