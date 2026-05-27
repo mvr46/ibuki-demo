@@ -37,6 +37,8 @@ class RememberPerson(Tool):
         unknown = _largest_unknown(identified)
         if unknown is None:
             return {"error": "No unknown face is currently visible"}
+        if unknown.embedding is None:
+            return {"error": "No unknown face has a usable embedding yet"}
 
         db = deps.face_identity_worker.identifier.db
         await asyncio.to_thread(db.add, name, unknown.embedding)
@@ -52,7 +54,7 @@ class RememberPerson(Tool):
 
 
 def _largest_unknown(identified: list[IdentifiedTarget]) -> IdentifiedTarget | None:
-    unknown = [target for target in identified if target.name is None]
+    unknown = [target for target in identified if target.name is None and target.can_remember and target.embedding is not None]
     if not unknown:
         return None
     return max(unknown, key=lambda target: target.target.area)

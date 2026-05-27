@@ -46,6 +46,11 @@ type FaceBox = {
   confidence: number;
   bbox: { x: number; y: number; width: number; height: number };
   focused: boolean;
+  observed?: boolean;
+  held?: boolean;
+  stability?: number;
+  can_remember?: boolean;
+  last_observed_at?: number | null;
 };
 
 type FaceState = {
@@ -62,6 +67,19 @@ type LogEntry = {
   level: string;
   category: string;
   message: string;
+};
+
+type ProcessStatus = {
+  available: boolean;
+  running: boolean;
+  pid: number | null;
+  command: string;
+  defaultCommand: string;
+  startedAt: string | null;
+  exitedAt: string | null;
+  exitCode: number | null;
+  signal: string | null;
+  backendTarget: string;
 };
 
 type PersonalityList = {
@@ -91,6 +109,8 @@ const AUTO_WITH: Record<string, string[]> = {
 
 const state = {
   status: null as DashboardStatus | null,
+  process: null as ProcessStatus | null,
+  processAvailable: false,
   faces: [] as FaceBox[],
   selectedFaceId: null as number | null,
   logs: [] as LogEntry[],
@@ -105,12 +125,21 @@ const logUi = {
 };
 
 const elements = {
+  app: byId("app"),
   cameraDot: byId("camera-dot"),
   faceDot: byId("face-dot"),
   backendDot: byId("backend-dot"),
+  processDot: byId("process-dot"),
   cameraState: byId("camera-state"),
   faceState: byId("face-state"),
   backendState: byId("backend-state"),
+  processState: byId("process-state"),
+  processPill: byId("process-pill"),
+  processSection: byId("process-section"),
+  commandInput: byId<HTMLInputElement>("command-input"),
+  startCommand: byId<HTMLButtonElement>("start-command"),
+  stopCommand: byId<HTMLButtonElement>("stop-command"),
+  commandStatus: byId("command-status"),
   selectedFace: byId("selected-face"),
   faceName: byId<HTMLInputElement>("face-name"),
   saveFace: byId<HTMLButtonElement>("save-face"),
@@ -218,6 +247,38 @@ function renderStatus(): void {
   renderBackendControls();
 }
 
+function renderProcessControls(): void {
+  const status = state.process;
+  elements.app.classList.toggle("has-process-controls", state.processAvailable);
+  elements.processPill.hidden = !state.processAvailable;
+  elements.processSection.hidden = !state.processAvailable;
+  if (!state.processAvailable || !status) return;
+
+  if (!elements.commandInput.value.trim()) {
+    elements.commandInput.value = status.command || status.defaultCommand;
+  }
+
+  elements.startCommand.disabled = status.running;
+  elements.stopCommand.disabled = !status.running;
+  if (status.running) {
+    elements.processState.textContent = status.pid ? `running ${status.pid}` : "running";
+    setDot(elements.processDot, "ok");
+  } else if (status.exitCode !== null || status.signal) {
+    elements.processState.textContent = status.signal ? `stopped ${status.signal}` : `exit ${status.exitCode}`;
+    setDot(elements.processDot, status.exitCode === 0 ? "idle" : "warn");
+  } else {
+    elements.processState.textContent = "idle";
+    setDot(elements.processDot, "idle");
+  }
+
+  const target = status.backendTarget.replace(/^https?:\/\//, "");
+  setStatus(
+    elements.commandStatus,
+    status.running ? `Running. Dashboard APIs proxy to ${target}.` : `Ready. Dashboard APIs proxy to ${target}.`,
+    status.running ? "ok" : "",
+  );
+}
+
 function renderPeople(): void {
   const people = state.status?.face_recognition.people || [];
   if (!people.length) {
@@ -245,6 +306,19 @@ async function loadDashboardStatus(): Promise<void> {
   renderStatus();
 }
 
+async function loadProcessStatus(): Promise<boolean> {
+  try {
+    state.process = await fetchJson<ProcessStatus>("/__dashboard/process/status");
+    state.processAvailable = !!state.process.available;
+    renderProcessControls();
+    return true;
+  } catch {
+    state.processAvailable = false;
+    renderProcessControls();
+    return false;
+  }
+}
+
 async function loadFaceState(): Promise<void> {
   const data = await fetchJson<FaceState>("/api/face/state");
   state.faces = data.faces || [];
@@ -259,9 +333,44 @@ function refreshFrame(): void {
   elements.cameraFeed.src = src;
 }
 
+async function startProcess(): Promise<void> {
+  const command = elements.commandInput.value.trim() || state.process?.defaultCommand || "";
+  if (!command) {
+    setStatus(elements.commandStatus, "Enter a command.", "warn");
+    return;
+  }
+  elements.startCommand.disabled = true;
+  setStatus(elements.commandStatus, "Starting...");
+  try {
+    state.process = await fetchJson<ProcessStatus>("/__dashboard/process/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command }),
+    });
+    state.processAvailable = true;
+    renderProcessControls();
+  } catch (error) {
+    setStatus(elements.commandStatus, error instanceof Error ? error.message : "Failed to start.", "error");
+    elements.startCommand.disabled = false;
+  }
+}
+
+async function stopProcess(): Promise<void> {
+  elements.stopCommand.disabled = true;
+  setStatus(elements.commandStatus, "Stopping...");
+  try {
+    state.process = await fetchJson<ProcessStatus>("/__dashboard/process/stop", { method: "POST" });
+    state.processAvailable = true;
+    renderProcessControls();
+  } catch (error) {
+    setStatus(elements.commandStatus, error instanceof Error ? error.message : "Failed to stop.", "error");
+    elements.stopCommand.disabled = false;
+  }
+}
+
 function renderFaces(): void {
   const selected = selectedFace();
-  elements.saveFace.disabled = !selected || selected.id === null;
+  elements.saveFace.disabled = !selected || selected.id === null || selected.can_remember === false;
   elements.cameraHelp.textContent = state.faces.length
     ? `${state.faces.length} face${state.faces.length === 1 ? "" : "s"} visible. Click a box to name it.`
     : "No faces detected.";
@@ -277,6 +386,7 @@ function renderFaces(): void {
       if (face.id === state.selectedFaceId) button.classList.add("is-selected");
       if (face.name) button.classList.add("is-known");
       if (face.focused) button.classList.add("is-focused");
+      if (face.held) button.classList.add("is-held");
       button.style.left = `${face.bbox.x * 100}%`;
       button.style.top = `${face.bbox.y * 100}%`;
       button.style.width = `${face.bbox.width * 100}%`;
@@ -587,14 +697,15 @@ function renderLogs(): void {
 function renderLog(entry: LogEntry): HTMLLIElement {
   const item = document.createElement("li");
   const level = entryLevel(entry);
+  const categoryText = (entry.category || "SYSTEM").toUpperCase();
   item.dataset.level = level;
-  item.dataset.category = entry.category;
+  item.dataset.category = categoryText;
 
   const time = document.createElement("time");
   time.textContent = entry.createdAt ? new Date(entry.createdAt).toLocaleTimeString() : "";
   const category = document.createElement("span");
-  category.className = `cat cat--${entry.category.toLowerCase()}`;
-  category.textContent = entry.category;
+  category.className = `cat cat--${categoryText.toLowerCase()}`;
+  category.textContent = categoryText;
   const message = document.createElement("span");
   message.className = "log-message";
   message.textContent = entry.message;
@@ -611,25 +722,49 @@ function isLogAtBottom(): boolean {
   return elements.logs.scrollHeight - elements.logs.scrollTop - elements.logs.clientHeight < 12;
 }
 
-function addLocalLog(message: string, level = "INFO", category = "SYSTEM"): void {
-  state.logs = [
-    ...state.logs,
-    { type: "log", createdAt: new Date().toISOString(), level, category, message },
-  ].slice(-500);
+function appendLog(entry: LogEntry): void {
+  state.logs = [...state.logs, entry].slice(-500);
+  if (state.logs.length < logUi.cleared) logUi.cleared = state.logs.length;
   if (!logUi.autoScroll) logUi.newSincePaused += 1;
   renderLogs();
 }
 
+function addLocalLog(message: string, level = "INFO", category = "SYSTEM"): void {
+  appendLog({ type: "log", createdAt: new Date().toISOString(), level, category, message });
+}
+
+let dashboardLogDisconnectedAt = 0;
+let processLogSource: EventSource | null = null;
+
 function connectLogs(): void {
   const source = new EventSource("/api/dashboard/events");
+  source.onopen = () => {
+    dashboardLogDisconnectedAt = 0;
+  };
   source.addEventListener("log", (event) => {
     const parsed = JSON.parse((event as MessageEvent).data) as LogEntry;
-    state.logs = [...state.logs, parsed].slice(-500);
-    if (state.logs.length < logUi.cleared) logUi.cleared = state.logs.length;
-    if (!logUi.autoScroll) logUi.newSincePaused += 1;
-    renderLogs();
+    appendLog(parsed);
   });
-  source.onerror = () => addLocalLog("Dashboard event stream disconnected; retrying", "WARNING");
+  source.onerror = () => {
+    const now = Date.now();
+    if (!dashboardLogDisconnectedAt || now - dashboardLogDisconnectedAt > 8000) {
+      dashboardLogDisconnectedAt = now;
+      addLocalLog("Dashboard event stream disconnected; retrying", "WARNING");
+    }
+  };
+}
+
+function connectProcessLogs(): void {
+  if (!state.processAvailable || processLogSource) return;
+  processLogSource = new EventSource("/__dashboard/process/events");
+  processLogSource.addEventListener("log", (event) => {
+    const parsed = JSON.parse((event as MessageEvent).data) as LogEntry;
+    appendLog(parsed);
+  });
+  processLogSource.onerror = () => {
+    processLogSource?.close();
+    processLogSource = null;
+  };
 }
 
 function wireEvents(): void {
@@ -639,6 +774,8 @@ function wireEvents(): void {
   elements.cameraFeed.addEventListener("error", () => {
     elements.cameraEmpty.hidden = false;
   });
+  elements.startCommand.addEventListener("click", () => void startProcess());
+  elements.stopCommand.addEventListener("click", () => void stopProcess());
   elements.refreshFaceState.addEventListener("click", () => void loadFaceState());
   elements.saveFace.addEventListener("click", () => void saveSelectedFace());
   elements.saveBackend.addEventListener("click", () => void saveBackend());
@@ -685,12 +822,17 @@ function wireEvents(): void {
 
 async function init(): Promise<void> {
   wireEvents();
+  const processAvailable = await loadProcessStatus();
+  if (processAvailable) connectProcessLogs();
   connectLogs();
   await loadDashboardStatus().catch(() => addLocalLog("Dashboard status unavailable", "WARNING"));
   await loadFaceState().catch(() => addLocalLog("Face state unavailable", "WARNING", "VISION"));
   await loadPersonalities();
   renderLogs();
   refreshFrame();
+  window.setInterval(() => void loadProcessStatus().then((available) => {
+    if (available) connectProcessLogs();
+  }), 2000);
   window.setInterval(() => void loadDashboardStatus().catch(() => undefined), 3000);
   window.setInterval(() => void loadFaceState().catch(() => undefined), 500);
   window.setInterval(refreshFrame, 350);

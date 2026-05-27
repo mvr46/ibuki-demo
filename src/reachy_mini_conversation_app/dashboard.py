@@ -281,6 +281,11 @@ def _face_payload(item: Any, focus_name: str | None) -> dict[str, object]:
     x, y, width, height = target.bbox
     name = item.name
     focused = bool(name and focus_name and name.casefold() == focus_name.casefold())
+    observed = bool(getattr(item, "observed", True))
+    held = bool(getattr(item, "held", False))
+    stability = round(float(getattr(item, "stability", 1.0)), 3)
+    can_remember = bool(getattr(item, "can_remember", getattr(item, "embedding", None) is not None))
+    last_observed_at = getattr(item, "last_observed_at", None)
     return {
         "id": item.track_id,
         "track_id": item.track_id,
@@ -300,6 +305,11 @@ def _face_payload(item: Any, focus_name: str | None) -> dict[str, object]:
         "focused": focused,
         "first_seen_at": item.first_seen_at,
         "last_seen_at": item.last_seen_at,
+        "observed": observed,
+        "held": held,
+        "stability": stability,
+        "can_remember": can_remember,
+        "last_observed_at": last_observed_at if last_observed_at is not None else item.last_seen_at,
     }
 
 

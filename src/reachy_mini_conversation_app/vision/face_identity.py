@@ -27,10 +27,25 @@ class IdentifiedTarget:
     target: HeadTrackerTarget
     name: str | None
     similarity: float
-    embedding: NDArray[np.float32]
+    embedding: NDArray[np.float32] | None = None
     first_seen_at: float | None = None
     last_seen_at: float | None = None
     track_id: int | None = None
+    observed: bool = True
+    held: bool = False
+    stability: float = 1.0
+    can_remember: bool = True
+    last_observed_at: float | None = None
+
+
+@dataclass(frozen=True)
+class FaceObservation:
+    """One detector target plus any recognition result available for it."""
+
+    target: HeadTrackerTarget
+    name: str | None
+    similarity: float
+    embedding: NDArray[np.float32] | None = None
 
 
 class FaceIdentifier:
@@ -49,21 +64,43 @@ class FaceIdentifier:
     ) -> list[IdentifiedTarget]:
         """Return identity-enriched targets for all recognizer-readable faces."""
         identified: list[IdentifiedTarget] = []
+        for observation in self.observe(frame_bgr, targets):
+            if observation.embedding is None:
+                continue
+            identified.append(
+                IdentifiedTarget(
+                    target=observation.target,
+                    name=observation.name,
+                    similarity=observation.similarity,
+                    embedding=observation.embedding,
+                    can_remember=True,
+                )
+            )
+        return identified
+
+    def observe(
+        self,
+        frame_bgr: NDArray[np.uint8],
+        targets: list[HeadTrackerTarget],
+    ) -> list[FaceObservation]:
+        """Return one observation for every detector target, even when embedding fails."""
+        observations: list[FaceObservation] = []
         for target in targets:
             bbox_xyxy = target_to_bbox_xyxy(target, frame_bgr.shape)
             embedding = self.recognizer.embed(frame_bgr, bbox_xyxy)
             if embedding is None:
+                observations.append(FaceObservation(target=target, name=None, similarity=0.0))
                 continue
             name, similarity = self.db.match(embedding, self.threshold)
-            identified.append(
-                IdentifiedTarget(
+            observations.append(
+                FaceObservation(
                     target=target,
                     name=name,
                     similarity=similarity,
                     embedding=np.asarray(embedding, dtype=np.float32),
                 )
             )
-        return identified
+        return observations
 
 
 class FaceIdentityService:
@@ -162,4 +199,9 @@ def with_seen_times(
         first_seen_at=first_seen_at,
         last_seen_at=last_seen_at,
         track_id=identified.track_id if track_id is None else track_id,
+        observed=identified.observed,
+        held=identified.held,
+        stability=identified.stability,
+        can_remember=identified.embedding is not None and identified.can_remember,
+        last_observed_at=identified.last_observed_at if identified.last_observed_at is not None else last_seen_at,
     )

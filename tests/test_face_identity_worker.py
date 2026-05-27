@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from reachy_mini_conversation_app.face_identity_worker import FaceIdentifierWorker
-from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
+from reachy_mini_conversation_app.vision.face_identity import FaceObservation, IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 
 
@@ -63,12 +63,16 @@ def test_face_identity_worker_processes_camera_targets() -> None:
     worker = FaceIdentifierWorker(_camera([identified.target]), _FakeIdentifier([identified]))
 
     worker._process_once(10.0)
+    assert worker.snapshot().visible == ()
+    assert worker.drain_events() == []
+    worker._process_once(10.4)
 
     snapshot = worker.snapshot()
     events = worker.drain_events()
     assert snapshot.visible[0].name == "Alice"
     assert snapshot.visible[0].track_id == 0
     assert snapshot.visible[0].first_seen_at == 10.0
+    assert snapshot.visible[0].last_observed_at == 10.4
     assert events[0].kind == "entered"
     assert events[0].name == "Alice"
 
@@ -80,17 +84,26 @@ def test_face_identity_worker_emits_named_and_left_events() -> None:
     worker = FaceIdentifierWorker(_camera([unknown.target]), _FakeIdentifier([]))
 
     worker._update_state([unknown], 10.0)
+    assert worker.drain_events() == []
+    worker._update_state([unknown], 10.4)
     assert worker.drain_events()[0].kind == "entered"
 
     worker._update_state([named], 11.0)
+    assert worker.drain_events() == []
+    worker._update_state([named], 11.2)
     named_events = worker.drain_events()
     assert [(event.kind, event.name) for event in named_events] == [("named", "Bob")]
 
-    worker._update_state([], 15.0)
+    worker._update_state([], 12.0)
+    assert worker.snapshot().visible[0].name == "Bob"
+    assert worker.snapshot().visible[0].held is True
+    assert worker.drain_events() == []
+
+    worker._update_state([], 13.0)
     left_events = worker.drain_events()
     assert [(event.kind, event.name) for event in left_events] == [("left", "Bob")]
-    assert left_events[0].last_seen_at == 11.0
-    assert worker.snapshot().last_seen["Bob"] == 11.0
+    assert left_events[0].last_seen_at == 11.2
+    assert worker.snapshot().last_seen["Bob"] == 11.2
 
 
 def test_face_identity_worker_remembers_visible_track() -> None:
@@ -99,6 +112,7 @@ def test_face_identity_worker_remembers_visible_track() -> None:
     identifier = _FakeIdentifier([])
     worker = FaceIdentifierWorker(_camera([unknown.target]), identifier)
     worker._update_state([unknown], 10.0)
+    worker._update_state([unknown], 10.4)
     track_id = worker.snapshot().visible[0].track_id
 
     assert track_id is not None
@@ -128,6 +142,7 @@ def test_face_identity_worker_records_visual_history() -> None:
     )
 
     worker._update_state([named, unknown], 10.0)
+    worker._update_state([named, unknown], 10.4)
 
     observations = worker.visual_window(9.0, 11.0)
     assert len(observations) == 2
@@ -149,3 +164,119 @@ def test_face_identity_worker_rejects_stale_visible_track() -> None:
         assert "track_id=99" in str(exc)
     else:  # pragma: no cover - defensive
         raise AssertionError("remember_visible should reject stale track IDs")
+
+
+def test_face_identity_worker_holds_known_identity_through_dirty_frames() -> None:
+    """A dirty frame should not erase a confirmed best-guess identity."""
+    alice = _identified("Alice", x_offset=0.0)
+    dirty = FaceObservation(target=_target(0.02), name=None, similarity=0.0, embedding=None)
+    worker = FaceIdentifierWorker(_camera([alice.target]), _FakeIdentifier([]))
+
+    worker._update_state([alice], 10.0)
+    worker._update_state([alice], 10.4)
+    worker.drain_events()
+    worker._update_state([dirty], 10.8)
+
+    visible = worker.snapshot().visible
+    assert len(visible) == 1
+    assert visible[0].name == "Alice"
+    assert visible[0].observed is True
+    assert visible[0].held is False
+    assert visible[0].last_observed_at == 10.8
+    assert worker.drain_events() == []
+
+
+def test_face_identity_worker_holds_known_identity_when_target_is_missed() -> None:
+    """A missed frame should hold the best guess until the missing window expires."""
+    alice = _identified("Alice")
+    worker = FaceIdentifierWorker(_camera([alice.target]), _FakeIdentifier([]))
+
+    worker._update_state([alice], 10.0)
+    worker._update_state([alice], 10.4)
+    worker.drain_events()
+    worker._update_state([], 11.0)
+
+    visible = worker.snapshot().visible
+    assert len(visible) == 1
+    assert visible[0].name == "Alice"
+    assert visible[0].observed is False
+    assert visible[0].held is True
+    assert 0.0 < visible[0].stability < 1.0
+    assert worker.drain_events() == []
+
+
+def test_face_identity_worker_hides_one_frame_false_detection() -> None:
+    """One-frame detector noise should never become visible or emit entered."""
+    unknown = _identified(None)
+    worker = FaceIdentifierWorker(_camera([unknown.target]), _FakeIdentifier([]))
+
+    worker._update_state([unknown], 10.0)
+    worker._update_state([], 12.0)
+
+    assert worker.snapshot().visible == ()
+    assert worker.drain_events() == []
+
+
+def test_face_identity_worker_suppresses_name_flicker_until_repeated() -> None:
+    """A single competing identity should not replace the stable best guess."""
+    alice = _identified("Alice", x_offset=0.0)
+    bob = _identified("Bob", x_offset=0.02)
+    worker = FaceIdentifierWorker(_camera([alice.target]), _FakeIdentifier([]))
+
+    worker._update_state([alice], 10.0)
+    worker._update_state([alice], 10.4)
+    worker.drain_events()
+    worker._update_state([bob], 10.8)
+
+    assert worker.snapshot().visible[0].name == "Alice"
+    assert worker.drain_events() == []
+
+    worker._update_state([bob], 11.2)
+    events = worker.drain_events()
+    assert worker.snapshot().visible[0].name == "Bob"
+    assert [(event.kind, event.name) for event in events] == [("named", "Bob")]
+
+
+def test_face_identity_worker_remembers_held_track_with_last_embedding() -> None:
+    """remember_visible should use the last good embedding for a held track."""
+    unknown = _identified(None)
+    identifier = _FakeIdentifier([])
+    worker = FaceIdentifierWorker(_camera([unknown.target]), identifier)
+    worker._update_state([unknown], 10.0)
+    worker._update_state([unknown], 10.4)
+    worker.drain_events()
+    track_id = worker.snapshot().visible[0].track_id
+    assert track_id is not None
+
+    worker._update_state([], 11.0)
+    assert worker.snapshot().visible[0].held is True
+    result = worker.remember_visible(track_id, "Alice")
+
+    assert result["status"] == "remembered"
+    assert identifier.db.saved[0][0] == "Alice"
+    assert np.array_equal(identifier.db.saved[0][1], unknown.embedding)
+
+
+def test_face_identity_worker_rejects_visible_track_without_embedding() -> None:
+    """remember_visible should reject tracks that have no usable embedding."""
+    worker = FaceIdentifierWorker(_camera([]), _FakeIdentifier([]))
+    with worker._lock:
+        worker._state.visible = (
+            [
+                IdentifiedTarget(
+                    target=_target(),
+                    name=None,
+                    similarity=0.0,
+                    embedding=None,
+                    track_id=7,
+                    can_remember=False,
+                )
+            ]
+        )
+
+    try:
+        worker.remember_visible(7, "Alice")
+    except ValueError as exc:
+        assert "no usable face embedding" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("remember_visible should reject tracks without embeddings")

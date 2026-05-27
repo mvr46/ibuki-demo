@@ -8,13 +8,17 @@ from reachy_mini_conversation_app.vision.face_identity import FaceIdentifier, ta
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 
 
-class _FakeRecognizer:
-    def __init__(self) -> None:
-        self.bboxes: list[np.ndarray] = []
+_DEFAULT_EMBEDDING = object()
 
-    def embed(self, frame_bgr: np.ndarray, bbox_xyxy: np.ndarray) -> np.ndarray:
+
+class _FakeRecognizer:
+    def __init__(self, embedding: object = _DEFAULT_EMBEDDING) -> None:
+        self.bboxes: list[np.ndarray] = []
+        self.embedding = np.array([1.0, 0.0], dtype=np.float32) if embedding is _DEFAULT_EMBEDDING else embedding
+
+    def embed(self, frame_bgr: np.ndarray, bbox_xyxy: np.ndarray) -> np.ndarray | None:
         self.bboxes.append(bbox_xyxy)
-        return np.array([1.0, 0.0], dtype=np.float32)
+        return self.embedding  # type: ignore[return-value]
 
 
 class _FakeDB:
@@ -51,3 +55,19 @@ def test_face_identifier_identifies_targets() -> None:
     assert identified[0].name == "Alice"
     assert identified[0].similarity == 0.83
     assert recognizer.bboxes[0].tolist() == [160.0, 96.0, 480.0, 336.0]
+
+
+def test_face_identifier_observes_targets_when_embedding_fails() -> None:
+    """FaceIdentifier.observe should preserve detector targets without embeddings."""
+    recognizer = _FakeRecognizer(embedding=None)
+    identifier = FaceIdentifier(recognizer=recognizer, db=_FakeDB())
+
+    observations = identifier.observe(np.zeros((480, 640, 3), dtype=np.uint8), [_target()])
+    identified = identifier.identify(np.zeros((480, 640, 3), dtype=np.uint8), [_target()])
+
+    assert len(observations) == 1
+    assert observations[0].target == _target()
+    assert observations[0].embedding is None
+    assert observations[0].name is None
+    assert observations[0].similarity == 0.0
+    assert identified == []

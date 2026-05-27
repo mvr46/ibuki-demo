@@ -29,10 +29,27 @@
             <strong id="backend-state">checking</strong>
           </div>
         </div>
+        <div class="status-pill" id="process-pill" hidden>
+          <span class="status-dot" id="process-dot"></span>
+          <div class="status-pill-text">
+            <span class="label">App</span>
+            <strong id="process-state">idle</strong>
+          </div>
+        </div>
       </header>
 
       <section class="workspace">
         <section class="panel naming-panel">
+          <div class="section process-section" id="process-section" hidden>
+            <div class="section-header">App Command</div>
+            <input id="command-input" type="text" autocomplete="off" spellcheck="false" />
+            <div class="button-row">
+              <button type="button" id="start-command" class="btn btn-primary">Start</button>
+              <button type="button" id="stop-command" class="btn btn-secondary">Stop</button>
+            </div>
+            <p class="status-line" id="command-status"></p>
+          </div>
+
           <div class="section">
             <div class="section-header">Face Naming</div>
             <div class="selected-face" id="selected-face">Select a face in the camera feed.</div>

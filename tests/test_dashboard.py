@@ -31,6 +31,11 @@ def _target(track_id: int | None = 7) -> IdentifiedTarget:
         first_seen_at=10.0,
         last_seen_at=12.0,
         track_id=track_id,
+        observed=False,
+        held=True,
+        stability=0.5,
+        can_remember=True,
+        last_observed_at=11.5,
     )
 
 
@@ -103,6 +108,11 @@ def test_dashboard_face_routes_return_frame_and_visible_faces() -> None:
     assert face["track_id"] == 7
     assert face["bbox"] == {"x": 0.2, "y": 0.15, "width": 0.25, "height": 0.35}
     assert face["label"] == "unknown"
+    assert face["observed"] is False
+    assert face["held"] is True
+    assert face["stability"] == 0.5
+    assert face["can_remember"] is True
+    assert face["last_observed_at"] == 11.5
 
 
 def test_dashboard_remember_route_saves_selected_face() -> None:
