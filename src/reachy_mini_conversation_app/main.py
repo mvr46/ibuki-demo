@@ -30,6 +30,115 @@ def update_chatbot(chatbot: List[Dict[str, Any]], response: Dict[str, Any]) -> L
     return chatbot
 
 
+def _disable_broken_gstreamer_python_plugin() -> None:
+    """Remove the optional libgstpython plugin from GStreamer scan paths on macOS uv Python."""
+    plugin_suffix = os.path.join("gstreamer_python", "lib", "gstreamer-1.0")
+    for env_name in ("GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH"):
+        value = os.environ.get(env_name)
+        if not value:
+            continue
+        paths = [path for path in value.split(os.pathsep) if not path.endswith(plugin_suffix)]
+        os.environ[env_name] = os.pathsep.join(paths)
+
+
+def _install_network_media_host_fallback() -> None:
+    """Use the connected robot host for WebRTC media when daemon status has no wlan_ip."""
+    if getattr(ReachyMini, "_conversation_app_media_host_fallback", False):
+        return
+
+    from reachy_mini.daemon.utils import is_local_camera_available
+    from reachy_mini.media.media_manager import MediaBackend, MediaManager
+    from reachy_mini.media.camera_constants import get_camera_specs_by_name
+
+    def _configure_mediamanager_with_host_fallback(
+        self: ReachyMini,
+        media_backend: str,
+        log_level: str,
+    ) -> MediaManager:
+        daemon_status = self.client.get_status()
+        self._warn_if_daemon_version_mismatch(daemon_status)
+
+        if getattr(daemon_status, "media_released", False) and media_backend.lower() != "no_media":
+            self.logger.info("Daemon media is released; asking daemon to re-acquire camera/audio hardware.")
+            if self.client.acquire_media():
+                daemon_status = self.client.get_status()
+            else:
+                self.logger.error("Failed to re-acquire media on daemon.")
+
+        specs_name = getattr(daemon_status, "camera_specs_name", "")
+        camera_specs = get_camera_specs_by_name(specs_name) if specs_name else None
+
+        if media_backend.lower() == "no_media":
+            self.logger.info("No media backend requested by user.")
+            if not getattr(daemon_status, "no_media", False) and not self._media_released:
+                self.release_media()
+            media_backend_enum = MediaBackend.NO_MEDIA
+        elif getattr(daemon_status, "no_media", False):
+            self.logger.info("Daemon reports no_media=True; skipping media initialisation.")
+            media_backend_enum = MediaBackend.NO_MEDIA
+        elif media_backend.lower() in ("default", "auto"):
+            if self.connection_mode == "localhost_only" and is_local_camera_available():
+                self.logger.info("Auto-detected local IPC endpoint. Using LOCAL backend.")
+                media_backend_enum = MediaBackend.LOCAL
+            else:
+                self.logger.info("No local IPC endpoint. Using WebRTC backend for streaming.")
+                media_backend_enum = MediaBackend.WEBRTC
+        else:
+            try:
+                media_backend_enum = MediaBackend(media_backend.lower())
+            except ValueError:
+                self.logger.warning("Unknown media backend %r, falling back to auto-detect.", media_backend)
+                if self.connection_mode == "localhost_only" and is_local_camera_available():
+                    media_backend_enum = MediaBackend.LOCAL
+                else:
+                    media_backend_enum = MediaBackend.WEBRTC
+
+        signalling_host = getattr(daemon_status, "wlan_ip", None) or getattr(self.client, "host", None) or "localhost"
+        if self.connection_mode == "network" and signalling_host == "localhost":
+            self.logger.warning(
+                "Daemon status did not provide wlan_ip; falling back to %s for media signaling.",
+                signalling_host,
+            )
+
+        if media_backend_enum == MediaBackend.WEBRTC:
+            from reachy_mini.media import audio_base
+            from reachy_mini.media.webrtc_utils import get_producer_list
+
+            if self.connection_mode == "network":
+                class RemoteWebRTCAudioDoA:
+                    def get_DoA(self) -> None:
+                        return None
+
+                    def close(self) -> None:
+                        return None
+
+                audio_base.AudioDoA = RemoteWebRTCAudioDoA
+
+            producer_ready = False
+            for _ in range(10):
+                try:
+                    producers = get_producer_list(signalling_host, 8443)
+                    producer_ready = any(meta.get("name") == "reachymini" for meta in producers.values())
+                    if producer_ready:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            if not producer_ready:
+                self.logger.warning("WebRTC producer 'reachymini' was not visible before media startup.")
+
+        return MediaManager(
+            backend=media_backend_enum,
+            log_level=log_level,
+            signalling_host=signalling_host,
+            camera_specs=camera_specs,
+            daemon_url=self._daemon_http_url,
+        )
+
+    ReachyMini._configure_mediamanager = _configure_mediamanager_with_host_fallback  # type: ignore[method-assign]
+    ReachyMini._conversation_app_media_host_fallback = True  # type: ignore[attr-defined]
+
+
 def main() -> None:
     """Entrypoint for the Reachy Mini conversation app."""
     args, _ = parse_args()
@@ -102,14 +211,37 @@ def run(
     from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
     from reachy_mini_conversation_app.audio.head_wobbler import HeadWobbler
 
+    if args.media_backend == "no_media":
+        if not args.no_camera:
+            logger.warning("Media backend no_media selected; disabling camera capture.")
+            args.no_camera = True
+        if not args.gradio:
+            logger.info("Media backend no_media selected; enabling Gradio for browser audio.")
+            args.gradio = True
+        if args.head_tracker is not None:
+            logger.warning("Head tracking disabled: --media-backend no_media was selected.")
+            args.head_tracker = None
+        if args.local_vision:
+            logger.warning("Local vision disabled: --media-backend no_media was selected.")
+            args.local_vision = False
+
     if args.no_camera and args.head_tracker is not None:
         logger.warning("Head tracking disabled: --no-camera flag is set. Remove --no-camera to enable head tracking.")
 
     if robot is None:
         try:
+            _disable_broken_gstreamer_python_plugin()
+            _install_network_media_host_fallback()
             robot_kwargs = {}
             if args.robot_name is not None:
                 robot_kwargs["robot_name"] = args.robot_name
+            robot_kwargs["connection_mode"] = args.connection_mode
+            if args.robot_host is not None:
+                robot_kwargs["host"] = args.robot_host
+            if args.robot_port is not None:
+                robot_kwargs["port"] = args.robot_port
+            if args.media_backend != "auto":
+                robot_kwargs["media_backend"] = args.media_backend
 
             logger.info("Initializing ReachyMini (SDK will auto-detect appropriate backend)")
             robot = ReachyMini(**robot_kwargs)

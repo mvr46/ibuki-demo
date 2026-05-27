@@ -199,8 +199,12 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 |--------|---------|-------------|
 | `--head-tracker {yolo,mediapipe}` | `None` | Select a head-tracking backend when a camera is available. `yolo` uses a local YOLO face detector, `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
+| `--media-backend {auto,default,local,webrtc,no_media}` | `auto` | Select the Reachy Mini SDK media backend. Use `no_media` for headless runs when camera/audio hardware is unavailable. In this app, `no_media` also disables camera, head tracking, and local vision. |
 | `--local-vision` | `False` | Use the local vision model (SmolVLM2) for camera-tool requests instead of the selected realtime backend. Requires `local_vision` extra to be installed. |
 | `--gradio` | `False` | Launch the Gradio web UI. Without this flag, runs in console mode. Required when running in simulation mode. |
+| `--connection-mode {auto,localhost_only,network}` | `network` | Select how the Reachy Mini SDK connects to the daemon. Defaults to `network` so camera/audio media streams come from the robot daemon. Use `localhost_only` for local development daemons. |
+| `--robot-host HOST` | `None` | Reachy Mini daemon hostname or IP address when using `--connection-mode network`. |
+| `--robot-port PORT` | `None` | Reachy Mini daemon port. Uses the SDK default when omitted. |
 | `--robot-name` | `None` | Optional. Connect to a specific robot by name when running multiple daemons on the same subnet. See [Multiple robots on the same subnet](#advanced-features). |
 | `--debug` | `False` | Enable verbose logging for troubleshooting. |
 
@@ -213,11 +217,17 @@ reachy-mini-conversation-app --head-tracker mediapipe
 # Run with the YOLO face-detection backend for head tracking
 reachy-mini-conversation-app --head-tracker yolo
 
+# Override the default robot host if reachy-mini.local is not the right target
+reachy-mini-conversation-app --robot-host <robot-ip-or-hostname> --head-tracker yolo
+
 # Run with local vision processing (requires local_vision extra)
 reachy-mini-conversation-app --local-vision
 
 # Audio-only conversation (no camera)
 reachy-mini-conversation-app --no-camera
+
+# Headless run when camera/audio hardware is unavailable
+reachy-mini-conversation-app --media-backend no_media
 
 # Launch with Gradio web interface
 reachy-mini-conversation-app --gradio

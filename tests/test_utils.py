@@ -1,5 +1,6 @@
 """Tests for utility helpers."""
 
+import sys
 import argparse
 from unittest.mock import MagicMock, patch
 
@@ -7,8 +8,57 @@ import pytest
 
 from reachy_mini_conversation_app.utils import (
     CameraVisionInitializationError,
+    parse_args,
     initialize_camera_and_vision,
 )
+
+
+def test_parse_args_accepts_media_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The app should expose the SDK media backend selector."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["reachy-mini-conversation-app", "--media-backend", "no_media"],
+    )
+
+    args, unknown = parse_args()
+
+    assert unknown == []
+    assert args.media_backend == "no_media"
+
+
+def test_parse_args_accepts_robot_connection_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The app should expose SDK daemon connection controls."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "reachy-mini-conversation-app",
+            "--connection-mode",
+            "network",
+            "--robot-host",
+            "reachy-mini.local",
+            "--robot-port",
+            "8001",
+        ],
+    )
+
+    args, unknown = parse_args()
+
+    assert unknown == []
+    assert args.connection_mode == "network"
+    assert args.robot_host == "reachy-mini.local"
+    assert args.robot_port == 8001
+
+
+def test_parse_args_defaults_to_network_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default startup should target robot media over the network, not local USB media."""
+    monkeypatch.setattr(sys, "argv", ["reachy-mini-conversation-app"])
+
+    args, unknown = parse_args()
+
+    assert unknown == []
+    assert args.connection_mode == "network"
 
 
 def test_initialize_camera_and_vision_propagates_local_vision_init_failures() -> None:

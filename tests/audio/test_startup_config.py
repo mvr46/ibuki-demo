@@ -64,6 +64,17 @@ def test_apply_audio_startup_config_returns_false_without_audio() -> None:
     assert applied is False
 
 
+def test_apply_audio_startup_config_skips_webrtc_backend() -> None:
+    """Remote WebRTC clients cannot apply audio board config through the SDK yet."""
+    audio = FakeAudio()
+    robot = SimpleNamespace(media=SimpleNamespace(audio=audio, backend=SimpleNamespace(value="webrtc")))
+
+    applied = apply_audio_startup_config(robot)
+
+    assert applied is False
+    assert audio.calls == []
+
+
 def test_apply_audio_startup_config_returns_false_without_sdk_api() -> None:
     """Startup should continue when the installed SDK does not expose audio config helpers."""
     robot = SimpleNamespace(media=SimpleNamespace(audio=object()))

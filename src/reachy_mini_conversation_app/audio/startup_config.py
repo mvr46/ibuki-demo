@@ -29,7 +29,13 @@ def apply_audio_startup_config(
 ) -> bool:
     """Apply the tuned XVF3800 audio configuration for the conversation app."""
     log = logger or logging.getLogger(__name__)
-    audio = getattr(getattr(robot, "media", None), "audio", None)
+    media = getattr(robot, "media", None)
+    backend = getattr(media, "backend", None)
+    if getattr(backend, "value", backend) == "webrtc":
+        log.info("Skipping Reachy audio startup config: WebRTC SDK clients cannot apply it remotely yet.")
+        return False
+
+    audio = getattr(media, "audio", None)
 
     if audio is None:
         log.warning("Skipping Reachy audio startup config: robot media audio is unavailable.")

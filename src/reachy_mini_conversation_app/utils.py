@@ -33,6 +33,12 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     )
     parser.add_argument("--no-camera", default=False, action="store_true", help="Disable camera usage")
     parser.add_argument(
+        "--media-backend",
+        choices=["auto", "default", "local", "webrtc", "no_media"],
+        default="auto",
+        help="Reachy Mini SDK media backend. Use no_media for headless runs without camera/audio hardware.",
+    )
+    parser.add_argument(
         "--local-vision",
         default=False,
         action="store_true",
@@ -40,6 +46,27 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     )
     parser.add_argument("--gradio", default=False, action="store_true", help="Open gradio interface")
     parser.add_argument("--debug", default=False, action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--connection-mode",
+        choices=["auto", "localhost_only", "network"],
+        default="network",
+        help=(
+            "Reachy Mini SDK daemon connection mode. Defaults to network so media streams come from the robot daemon. "
+            "Use localhost_only for local development daemons."
+        ),
+    )
+    parser.add_argument(
+        "--robot-host",
+        type=str,
+        default=None,
+        help="Reachy Mini daemon hostname or IP address when using --connection-mode network.",
+    )
+    parser.add_argument(
+        "--robot-port",
+        type=int,
+        default=None,
+        help="Reachy Mini daemon port. Defaults to the SDK default when omitted.",
+    )
     parser.add_argument(
         "--robot-name",
         type=str,
