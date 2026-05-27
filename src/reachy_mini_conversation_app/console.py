@@ -43,6 +43,7 @@ from reachy_mini_conversation_app.config import (
     get_hf_connection_selection,
     refresh_runtime_config_from_env,
 )
+from reachy_mini_conversation_app.dashboard import DashboardLogBuffer, mount_dashboard_routes
 from reachy_mini_conversation_app.startup_settings import read_startup_settings, write_startup_settings
 from reachy_mini_conversation_app.audio.startup_config import apply_audio_startup_config
 from reachy_mini_conversation_app.conversation_handler import ConversationHandler
@@ -124,6 +125,7 @@ class LocalStream:
         self._settings_initialized = False
         self._asyncio_loop = None
         self._active_backend_name = get_backend_choice()
+        self._dashboard_logs = DashboardLogBuffer()
 
     # ---- Settings UI ----
     def _read_env_lines(self, env_path: Path) -> list[str]:
@@ -416,6 +418,15 @@ class LocalStream:
         @self._settings_app.get("/status")
         def _status() -> JSONResponse:
             return JSONResponse(_status_payload())
+
+        self._dashboard_logs.install()
+        self._dashboard_logs.add("Dashboard routes mounted", category="SYSTEM")
+        mount_dashboard_routes(
+            self._settings_app,
+            get_deps=lambda: getattr(self.handler, "deps", None),
+            get_backend_status=_status_payload,
+            logs=self._dashboard_logs,
+        )
 
         # GET /ready -> whether backend finished loading tools
         @self._settings_app.get("/ready")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import time
+import logging
 import threading
 from typing import Literal
 from collections import deque
@@ -18,6 +19,8 @@ from reachy_mini_conversation_app.vision.face_identity import (
 )
 from reachy_mini_conversation_app.vision.face_recognition_lib import Tracker
 
+
+logger = logging.getLogger(__name__)
 
 VisionEventKind = Literal["entered", "left", "named"]
 
@@ -111,6 +114,58 @@ class FaceIdentifierWorker:
             self._state.events.clear()
         return events
 
+    def remember_visible(self, track_id: int, name: str) -> dict[str, object]:
+        """Save a currently visible tracked face under ``name`` and update state."""
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("name must be a non-empty string")
+
+        with self._lock:
+            match_index = next(
+                (index for index, item in enumerate(self._state.visible) if item.track_id == track_id),
+                None,
+            )
+            if match_index is None:
+                raise KeyError(f"visible face track_id={track_id} not found")
+
+            current = self._state.visible[match_index]
+            self.identifier.db.add(clean_name, current.embedding)
+            exemplar_count = self.identifier.db.exemplar_count(clean_name)
+            now = time.monotonic()
+            position = position_label(current.target.x_offset)
+            renamed = IdentifiedTarget(
+                target=current.target,
+                name=clean_name,
+                similarity=1.0,
+                embedding=current.embedding,
+                first_seen_at=current.first_seen_at,
+                last_seen_at=now,
+                track_id=current.track_id,
+            )
+            self._state.visible[match_index] = renamed
+            self._track_names[track_id] = clean_name
+            self._track_last_seen[track_id] = now
+            self._track_positions[track_id] = position
+            self._state.last_seen[clean_name] = now
+            self._state.last_positions[clean_name] = position
+            self._state.events.append(VisionEvent("named", clean_name, position, now))
+
+            for track in self._tracker.tracks:
+                if int(track.get("id", -1)) == track_id:
+                    track["name"] = clean_name
+                    track["unknown_streak"] = 0
+                    break
+
+        logger.info("Remembered visible face track_id=%s as %s (%d exemplar(s))", track_id, clean_name, exemplar_count)
+        return {
+            "status": "remembered",
+            "track_id": track_id,
+            "name": clean_name,
+            "exemplar_count": exemplar_count,
+            "x_offset": round(float(current.target.x_offset), 3),
+            "y_offset": round(float(current.target.y_offset), 3),
+        }
+
     def _loop(self) -> None:
         interval = 1.0 / self.rate_hz
         while not self._stop.is_set():
@@ -162,7 +217,14 @@ class FaceIdentifierWorker:
             next_positions[track_id] = position
             if current_name is not None:
                 track["name"] = current_name
-            visible.append(with_seen_times(item, first_seen_at=first_seen_at, last_seen_at=current_time))
+            visible.append(
+                with_seen_times(
+                    item,
+                    first_seen_at=first_seen_at,
+                    last_seen_at=current_time,
+                    track_id=track_id,
+                )
+            )
 
         for track_id in sorted(previous_ids - current_ids):
             name = previous_names.get(track_id)
@@ -204,4 +266,5 @@ def _copy_identified(target: IdentifiedTarget) -> IdentifiedTarget:
         embedding=target.embedding.copy(),
         first_seen_at=target.first_seen_at,
         last_seen_at=target.last_seen_at,
+        track_id=target.track_id,
     )

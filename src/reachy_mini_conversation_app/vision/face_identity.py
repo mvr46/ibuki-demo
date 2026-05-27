@@ -30,6 +30,7 @@ class IdentifiedTarget:
     embedding: NDArray[np.float32]
     first_seen_at: float | None = None
     last_seen_at: float | None = None
+    track_id: int | None = None
 
 
 class FaceIdentifier:
@@ -150,6 +151,7 @@ def with_seen_times(
     *,
     first_seen_at: float | None,
     last_seen_at: float | None,
+    track_id: int | None = None,
 ) -> IdentifiedTarget:
     """Return an identified target with presence timestamps attached."""
     return IdentifiedTarget(
@@ -159,4 +161,5 @@ def with_seen_times(
         embedding=identified.embedding,
         first_seen_at=first_seen_at,
         last_seen_at=last_seen_at,
+        track_id=identified.track_id if track_id is None else track_id,
     )

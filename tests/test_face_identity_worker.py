@@ -13,9 +13,21 @@ from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 class _FakeIdentifier:
     def __init__(self, identified: list[IdentifiedTarget]) -> None:
         self.identified = identified
+        self.db = _FakeDB()
 
     def identify(self, frame: np.ndarray, targets: list[HeadTrackerTarget]) -> list[IdentifiedTarget]:
         return self.identified
+
+
+class _FakeDB:
+    def __init__(self) -> None:
+        self.saved: list[tuple[str, np.ndarray]] = []
+
+    def add(self, name: str, embedding: np.ndarray) -> None:
+        self.saved.append((name, embedding.copy()))
+
+    def exemplar_count(self, name: str) -> int:
+        return sum(1 for saved_name, _ in self.saved if saved_name == name)
 
 
 def _target(x_offset: float = 0.0) -> HeadTrackerTarget:
@@ -55,6 +67,7 @@ def test_face_identity_worker_processes_camera_targets() -> None:
     snapshot = worker.snapshot()
     events = worker.drain_events()
     assert snapshot.visible[0].name == "Alice"
+    assert snapshot.visible[0].track_id == 0
     assert snapshot.visible[0].first_seen_at == 10.0
     assert events[0].kind == "entered"
     assert events[0].name == "Alice"
@@ -78,3 +91,39 @@ def test_face_identity_worker_emits_named_and_left_events() -> None:
     assert [(event.kind, event.name) for event in left_events] == [("left", "Bob")]
     assert left_events[0].last_seen_at == 11.0
     assert worker.snapshot().last_seen["Bob"] == 11.0
+
+
+def test_face_identity_worker_remembers_visible_track() -> None:
+    """remember_visible should save the selected visible embedding and update state."""
+    unknown = _identified(None)
+    identifier = _FakeIdentifier([])
+    worker = FaceIdentifierWorker(_camera([unknown.target]), identifier)
+    worker._update_state([unknown], 10.0)
+    track_id = worker.snapshot().visible[0].track_id
+
+    assert track_id is not None
+    result = worker.remember_visible(track_id, "Alice")
+
+    snapshot = worker.snapshot()
+    events = worker.drain_events()
+    assert result["status"] == "remembered"
+    assert result["name"] == "Alice"
+    assert result["exemplar_count"] == 1
+    assert snapshot.visible[0].name == "Alice"
+    assert snapshot.visible[0].track_id == track_id
+    assert identifier.db.saved[0][0] == "Alice"
+    assert np.array_equal(identifier.db.saved[0][1], unknown.embedding)
+    assert events[-1].kind == "named"
+    assert events[-1].name == "Alice"
+
+
+def test_face_identity_worker_rejects_stale_visible_track() -> None:
+    """remember_visible should fail cleanly for absent/stale tracks."""
+    worker = FaceIdentifierWorker(_camera([]), _FakeIdentifier([]))
+
+    try:
+        worker.remember_visible(99, "Alice")
+    except KeyError as exc:
+        assert "track_id=99" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("remember_visible should reject stale track IDs")
