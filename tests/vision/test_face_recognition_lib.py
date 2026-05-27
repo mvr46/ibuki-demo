@@ -73,3 +73,39 @@ def test_face_recognizer_embed_aligns_and_normalizes() -> None:
     assert np.linalg.norm(embedding) == pytest.approx(1.0)
     assert embedding[0] == pytest.approx(0.6)
     assert embedding[1] == pytest.approx(0.8)
+
+
+def test_face_recognizer_supports_insightface_item_assignment_landmarks() -> None:
+    """InsightFace landmark models write landmarks back with face[taskname] assignment."""
+
+    class FakeLandmarker:
+        def get(self, frame: np.ndarray, face: object) -> None:
+            face["landmark_2d_106"] = np.array(  # type: ignore[index]
+                [
+                    [18.0, 24.0],
+                    [42.0, 24.0],
+                    [30.0, 35.0],
+                    [22.0, 48.0],
+                    [40.0, 48.0],
+                ],
+                dtype=np.float32,
+            )
+
+    class FakeEmbedder:
+        def get_feat(self, aligned: np.ndarray) -> np.ndarray:
+            embedding = np.zeros((1, 512), dtype=np.float32)
+            embedding[0, 0] = 1.0
+            return embedding
+
+    recognizer = FaceRecognizer.__new__(FaceRecognizer)
+    recognizer._landmarker = FakeLandmarker()
+    recognizer._embedder = FakeEmbedder()
+    recognizer._norm_crop = lambda _frame, _kps: np.zeros((112, 112, 3), dtype=np.uint8)
+
+    embedding = recognizer.embed(
+        np.zeros((64, 64, 3), dtype=np.uint8),
+        np.array([10, 10, 50, 55], dtype=np.float32),
+    )
+
+    assert embedding is not None
+    assert embedding[0] == pytest.approx(1.0)

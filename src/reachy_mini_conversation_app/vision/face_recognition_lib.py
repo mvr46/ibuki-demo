@@ -3,7 +3,6 @@
 from __future__ import annotations
 import pickle
 import logging
-from types import SimpleNamespace
 from typing import Optional
 from pathlib import Path
 from dataclasses import dataclass
@@ -200,7 +199,7 @@ class FaceRecognizer:
         return _normalize_embedding(raw_embedding)
 
     def _landmarks(self, frame_bgr: NDArray[np.uint8], bbox_xyxy: NDArray[np.float32]) -> NDArray[np.float32] | None:
-        face = SimpleNamespace(bbox=bbox_xyxy)
+        face = _FaceContainer(bbox=bbox_xyxy)
         try:
             returned = self._landmarker.get(frame_bgr, face)
         except Exception as exc:
@@ -254,6 +253,26 @@ def _clip_bbox_xyxy(bbox: NDArray[np.float32], frame_shape: tuple[int, ...]) -> 
     if x2 <= x1 or y2 <= y1:
         return None
     return np.array([x1, y1, x2, y2], dtype=np.float32)
+
+
+class _FaceContainer(dict):
+    """Tiny mutable face object compatible with InsightFace landmark models."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__()
+        for key, value in kwargs.items():
+            self[key] = value
+
+    def __setattr__(self, name: str, value: object) -> None:
+        dict.__setitem__(self, name, value)
+        object.__setattr__(self, name, value)
+
+    def __setitem__(self, name: str, value: object) -> None:
+        dict.__setitem__(self, name, value)
+        object.__setattr__(self, name, value)
+
+    def __getattr__(self, name: str) -> object | None:
+        return self.get(name)
 
 
 def _first_available_landmarks(*candidates: object) -> object | None:
