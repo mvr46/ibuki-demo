@@ -487,6 +487,41 @@ textarea::placeholder {
   padding: 8px 0;
 }
 
+/* ---------- Diagnostics ---------- */
+
+.diagnostics-card {
+  flex-shrink: 0;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin: 0;
+}
+
+.metric-grid div {
+  min-width: 0;
+}
+
+.metric-grid dt {
+  margin-bottom: 2px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.metric-grid dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- Log card ---------- */
 
 .log-card {
@@ -725,7 +760,8 @@ textarea::placeholder {
 
 .settings-card {
   padding: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  flex-shrink: 0;
 }
 
 .settings-card > summary {

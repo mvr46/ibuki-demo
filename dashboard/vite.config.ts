@@ -390,6 +390,7 @@ function dashboardProcessPlugin(): Plugin {
 
     child = spawn(parsed.command, parsed.args, {
       cwd: projectRoot,
+      detached: true,
       env: {
         ...gstreamerSafeEnv(process.env),
         GST_REGISTRY_FORK: "no",
@@ -435,14 +436,27 @@ function dashboardProcessPlugin(): Plugin {
   function stopProcess(): void {
     if (!isRunning() || child === null) return;
     addLog("Stopping command with SIGINT", "INFO", "PROCESS");
-    child.kill("SIGINT");
+    signalChild("SIGINT");
     const stoppedChild = child;
     setTimeout(() => {
       if (stoppedChild.exitCode === null && stoppedChild.signalCode === null) {
         addLog("Command did not stop after SIGINT; sending SIGTERM", "WARNING", "PROCESS");
-        stoppedChild.kill("SIGTERM");
+        signalChild("SIGTERM", stoppedChild);
       }
     }, 5000);
+  }
+
+  function signalChild(signal: NodeJS.Signals, target: ChildProcessWithoutNullStreams | null = child): void {
+    if (target === null || target.pid === undefined) return;
+    try {
+      process.kill(-target.pid, signal);
+    } catch {
+      try {
+        target.kill(signal);
+      } catch {
+        // Process may already be gone.
+      }
+    }
   }
 
   function sendJson(res: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body: string) => void }, status: number, payload: object): void {
@@ -482,6 +496,7 @@ function dashboardProcessPlugin(): Plugin {
       has_key: false,
       has_openai_key: false,
       has_gemini_key: false,
+      has_local_backend: false,
       has_hf_session_url: false,
       has_hf_ws_url: false,
       has_hf_connection: false,
@@ -492,6 +507,7 @@ function dashboardProcessPlugin(): Plugin {
       can_proceed_with_openai: false,
       can_proceed_with_gemini: false,
       can_proceed_with_hf: false,
+      can_proceed_with_local: false,
       requires_restart: false,
       backend_unavailable: true,
       backend_unavailable_reason: isRunning()

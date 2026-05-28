@@ -142,7 +142,11 @@ def mount_dashboard_routes(
         deps = get_deps()
         return getattr(deps, "face_identity_worker", None) if deps is not None else None
 
-    @app.get("/api/dashboard/status")
+    def _performance_diagnostics() -> Any | None:
+        deps = get_deps()
+        return getattr(deps, "performance_diagnostics", None) if deps is not None else None
+
+    @app.get("/api/dashboard/status")  # type: ignore[misc]
     def _dashboard_status() -> JSONResponse:
         camera_worker = _camera_worker()
         face_worker = _face_identity_worker()
@@ -170,8 +174,13 @@ def mount_dashboard_routes(
             except Exception:
                 visible_count = 0
 
+        diagnostics = _performance_diagnostics()
+        diagnostics_snapshot = getattr(diagnostics, "snapshot", None) if diagnostics is not None else None
+        performance = diagnostics_snapshot() if callable(diagnostics_snapshot) else {}
+
         payload = {
             **get_backend_status(),
+            "performance": performance,
             "camera": {
                 "available": camera_worker is not None,
                 "frame_available": frame_available,
@@ -189,7 +198,7 @@ def mount_dashboard_routes(
         }
         return JSONResponse(payload)
 
-    @app.get("/api/face/frame.jpg")
+    @app.get("/api/face/frame.jpg")  # type: ignore[misc]
     def _face_frame() -> Response | JSONResponse:
         camera_worker = _camera_worker()
         if camera_worker is None:
@@ -204,7 +213,7 @@ def mount_dashboard_routes(
             return JSONResponse({"ok": False, "error": "frame_encode_failed"}, status_code=500)
         return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
-    @app.get("/api/face/state")
+    @app.get("/api/face/state")  # type: ignore[misc]
     def _face_state() -> JSONResponse:
         camera_worker = _camera_worker()
         face_worker = _face_identity_worker()
@@ -225,7 +234,7 @@ def mount_dashboard_routes(
             }
         )
 
-    @app.post("/api/face/remember")
+    @app.post("/api/face/remember")  # type: ignore[misc]
     def _remember_face(payload: dict[str, Any] = Body(...)) -> JSONResponse:
         face_worker = _face_identity_worker()
         if face_worker is None or not callable(getattr(face_worker, "remember_visible", None)):
@@ -236,7 +245,10 @@ def mount_dashboard_routes(
         if not name:
             return JSONResponse({"ok": False, "error": "name_required"}, status_code=400)
         try:
-            face_id = int(payload.get("face_id"))
+            raw_face_id = payload.get("face_id")
+            if raw_face_id is None:
+                raise ValueError
+            face_id = int(str(raw_face_id))
         except (TypeError, ValueError):
             return JSONResponse({"ok": False, "error": "face_id_required"}, status_code=400)
         try:
@@ -252,7 +264,7 @@ def mount_dashboard_routes(
         )
         return JSONResponse({"ok": True, **result})
 
-    @app.get("/api/dashboard/events")
+    @app.get("/api/dashboard/events")  # type: ignore[misc]
     async def _dashboard_events(request: Request, last_id: int = 0) -> StreamingResponse:
         initial_last_id = max(0, int(last_id))
         if initial_last_id == 0:

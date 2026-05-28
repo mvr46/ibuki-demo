@@ -49,6 +49,8 @@ def _install_network_media_host_fallback() -> None:
     from reachy_mini.daemon.utils import is_local_camera_available
     from reachy_mini.media.media_manager import MediaBackend, MediaManager
     from reachy_mini.media.camera_constants import get_camera_specs_by_name
+    from reachy_mini_conversation_app.config import config
+    from reachy_mini_conversation_app.transport import resolve_transport
 
     def _configure_mediamanager_with_host_fallback(
         self: ReachyMini,
@@ -93,11 +95,26 @@ def _install_network_media_host_fallback() -> None:
                 else:
                     media_backend_enum = MediaBackend.WEBRTC
 
-        signalling_host = getattr(daemon_status, "wlan_ip", None) or getattr(self.client, "host", None) or "localhost"
+        transport_selection = resolve_transport(
+            control_host=getattr(self.client, "host", None),
+            daemon_wlan_ip=getattr(daemon_status, "wlan_ip", None),
+            media_host_override=getattr(config, "REACHY_MEDIA_HOST", None),
+            hardware_profile=getattr(ReachyMini, "_conversation_app_hardware_profile", "auto"),
+        )
+        self._conversation_app_transport_selection = transport_selection
+        signalling_host = transport_selection.media_host or "localhost"
         if self.connection_mode == "network" and signalling_host == "localhost":
             self.logger.warning(
                 "Daemon status did not provide wlan_ip; falling back to %s for media signaling.",
                 signalling_host,
+            )
+        else:
+            self.logger.info(
+                "Reachy media signaling host resolved to %s (source=%s, control=%s, wlan=%s)",
+                signalling_host,
+                transport_selection.media_host_source,
+                transport_selection.control_host,
+                transport_selection.daemon_wlan_ip,
             )
 
         if media_backend_enum == MediaBackend.WEBRTC:
@@ -158,6 +175,7 @@ def run(
     from reachy_mini_conversation_app.moves import MovementManager
     from reachy_mini_conversation_app.config import (
         HF_BACKEND,
+        LOCAL_BACKEND,
         GEMINI_BACKEND,
         OPENAI_BACKEND,
         HF_LOCAL_CONNECTION_MODE,
@@ -167,6 +185,8 @@ def run(
         get_hf_connection_selection,
         refresh_runtime_config_from_env,
     )
+    from reachy_mini_conversation_app.transport import measure_http_rtt_ms, default_robot_host_for_profile
+    from reachy_mini_conversation_app.diagnostics import PerformanceDiagnostics
     from reachy_mini_conversation_app.startup_settings import (
         StartupSettings,
         load_startup_settings_into_runtime,
@@ -174,6 +194,7 @@ def run(
 
     logger = setup_logger(args.debug)
     logger.info("Starting Reachy Mini Conversation App")
+    diagnostics = PerformanceDiagnostics()
     startup_settings = StartupSettings()
 
     if instance_path is not None:
@@ -211,6 +232,7 @@ def run(
     from reachy_mini_conversation_app.console import LocalStream
     from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
     from reachy_mini_conversation_app.audio.head_wobbler import HeadWobbler
+    from reachy_mini_conversation_app.conversation_handler import ConversationHandler
 
     if args.media_backend == "no_media":
         if not args.no_camera:
@@ -232,11 +254,20 @@ def run(
     if robot is None:
         try:
             _disable_broken_gstreamer_python_plugin()
+            ReachyMini._conversation_app_hardware_profile = args.hardware_profile
             _install_network_media_host_fallback()
             robot_kwargs = {}
             if args.robot_name is not None:
                 robot_kwargs["robot_name"] = args.robot_name
             robot_kwargs["connection_mode"] = args.connection_mode
+            if args.robot_host is None:
+                selected_host = default_robot_host_for_profile(
+                    args.hardware_profile,
+                    port=args.robot_port or 8000,
+                )
+                if selected_host is not None:
+                    args.robot_host = selected_host
+                    logger.info("Hardware profile %s selected robot host %s", args.hardware_profile, selected_host)
             if args.robot_host is not None:
                 robot_kwargs["host"] = args.robot_host
             if args.robot_port is not None:
@@ -246,6 +277,15 @@ def run(
 
             logger.info("Initializing ReachyMini (SDK will auto-detect appropriate backend)")
             robot = ReachyMini(**robot_kwargs)
+            transport_selection = getattr(robot, "_conversation_app_transport_selection", None)
+            if transport_selection is not None:
+                diagnostics.set_transport(
+                    control_host=transport_selection.control_host,
+                    media_host=transport_selection.media_host,
+                    daemon_wlan_ip=transport_selection.daemon_wlan_ip,
+                    media_host_source=transport_selection.media_host_source,
+                    hardware_profile=transport_selection.hardware_profile,
+                )
 
         except TimeoutError as e:
             logger.error(f"Connection timeout: Failed to connect to Reachy Mini daemon. Details: {e}")
@@ -264,6 +304,10 @@ def run(
 
     # Auto-enable Gradio in simulation mode (both MuJoCo for daemon and mockup-sim for desktop app)
     status = robot.client.get_status()
+    diagnostics.set_daemon(
+        rtt_ms=measure_http_rtt_ms(f"http://{getattr(robot.client, 'host', 'localhost')}:{getattr(robot.client, 'port', 8000)}/api/daemon/status"),
+        state=(status.get("state") if isinstance(status, dict) else getattr(status, "state", None)),
+    )
     if isinstance(status, dict):
         simulation_enabled = status.get("simulation_enabled", False)
         mockup_sim_enabled = status.get("mockup_sim_enabled", False)
@@ -287,6 +331,7 @@ def run(
             args,
             robot,
             spatial_audio_source=spatial_audio_source,
+            performance_diagnostics=diagnostics,
         )
     except CameraVisionInitializationError as e:
         logger.error("Failed to initialize camera/vision: %s", e)
@@ -345,8 +390,14 @@ def run(
         spatial_audio_source=spatial_audio_source,
         speaker_attribution_worker=speaker_attribution_worker,
         vision_processor=vision_processor,
+        vision_analyzer=None,
         head_wobbler=head_wobbler,
+        performance_diagnostics=diagnostics,
     )
+    if config.BACKEND_PROVIDER == LOCAL_BACKEND:
+        from reachy_mini_conversation_app.vision.analyzers import build_default_vision_analyzer
+
+        deps.vision_analyzer = build_default_vision_analyzer(vision_processor)
     current_file_path = os.path.dirname(os.path.abspath(__file__))
     logger.debug(f"Current file absolute path: {current_file_path}")
     chatbot = gr.Chatbot(
@@ -359,7 +410,18 @@ def run(
     )
     logger.debug(f"Chatbot avatar images: {chatbot.avatar_images}")
 
-    if is_gemini_model():
+    handler: ConversationHandler
+    if config.BACKEND_PROVIDER == LOCAL_BACKEND:
+        from reachy_mini_conversation_app.local_conversation import LocalConversationHandler
+
+        logger.info("Using %s via LocalConversationHandler", get_backend_label(config.BACKEND_PROVIDER))
+        handler = LocalConversationHandler(
+            deps,
+            gradio_mode=args.gradio,
+            instance_path=instance_path,
+            startup_voice=startup_settings.voice,
+        )
+    elif is_gemini_model():
         from reachy_mini_conversation_app.gemini_live import GeminiLiveHandler
 
         logger.info(
@@ -391,7 +453,7 @@ def run(
             gradio_mode=args.gradio,
             instance_path=instance_path,
             startup_voice=startup_settings.voice,
-        )  # type: ignore[assignment]
+        )
     else:
         from reachy_mini_conversation_app.openai_realtime import OpenaiRealtimeHandler
 
@@ -404,7 +466,7 @@ def run(
             gradio_mode=args.gradio,
             instance_path=instance_path,
             startup_voice=startup_settings.voice,
-        )  # type: ignore[assignment]
+        )
 
     stream_manager: gr.Blocks | LocalStream | None = None
 

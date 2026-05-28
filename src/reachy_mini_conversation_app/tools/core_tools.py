@@ -59,7 +59,9 @@ class ToolDependencies:
     spatial_audio_source: Any | None = None
     speaker_attribution_worker: Any | None = None
     vision_processor: Any | None = None
+    vision_analyzer: Any | None = None
     head_wobbler: Any | None = None  # HeadWobbler for audio-reactive motion
+    performance_diagnostics: Any | None = None
     motion_duration_s: float = 1.0
 
 

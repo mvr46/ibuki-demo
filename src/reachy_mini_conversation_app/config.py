@@ -88,7 +88,10 @@ GEMINI_AVAILABLE_VOICES: list[str] = [
 OPENAI_BACKEND = "openai"
 GEMINI_BACKEND = "gemini"
 HF_BACKEND = "huggingface"
+LOCAL_BACKEND = "local"
 DEFAULT_BACKEND_PROVIDER = HF_BACKEND
+DEFAULT_WIRED_REACHY_HOST = "10.42.0.2"
+REACHY_MEDIA_HOST_ENV = "REACHY_MEDIA_HOST"
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 HF_LOCAL_CONNECTION_MODE = "local"
@@ -116,16 +119,19 @@ DEFAULT_MODEL_NAME_BY_BACKEND = {
     OPENAI_BACKEND: "gpt-realtime-2",
     GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
     HF_BACKEND: HF_DEFAULTS.model_name,
+    LOCAL_BACKEND: "gemma3:latest",
 }
 BACKEND_LABEL_BY_PROVIDER = {
     OPENAI_BACKEND: "OpenAI Realtime",
     GEMINI_BACKEND: "Gemini Live",
     HF_BACKEND: "Hugging Face",
+    LOCAL_BACKEND: "Local Mac",
 }
 DEFAULT_VOICE_BY_BACKEND = {
     OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
+    LOCAL_BACKEND: "local",
 }
 
 logger = logging.getLogger(__name__)
@@ -159,6 +165,8 @@ def _resolve_model_name(
     normalized_backend = _normalize_backend_provider(backend_provider, model_name)
     if normalized_backend == HF_BACKEND:
         return DEFAULT_MODEL_NAME_BY_BACKEND[HF_BACKEND]
+    if normalized_backend == LOCAL_BACKEND:
+        return (os.getenv("OLLAMA_MODEL") or model_name or DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND]).strip()
 
     candidate = (model_name or "").strip()
     if candidate:
@@ -375,6 +383,13 @@ class Config:
     # Deliberately ignore HF_REALTIME_SESSION_URL from the environment; the app-managed proxy is HF_DEFAULTS.session_url.
     HF_REALTIME_SESSION_URL = HF_DEFAULTS.session_url
     HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
+    REACHY_MEDIA_HOST = os.getenv(REACHY_MEDIA_HOST_ENV)
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND])
+    LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
+    LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
+    LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")
+    PIPER_VOICE = os.getenv("PIPER_VOICE")
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
@@ -479,6 +494,13 @@ def refresh_runtime_config_from_env() -> None:
     # Deliberately ignore HF_REALTIME_SESSION_URL from the environment; the app-managed proxy is HF_DEFAULTS.session_url.
     config.HF_REALTIME_SESSION_URL = HF_DEFAULTS.session_url
     config.HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
+    config.REACHY_MEDIA_HOST = os.getenv(REACHY_MEDIA_HOST_ENV)
+    config.OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    config.OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND])
+    config.LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
+    config.LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
+    config.LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")
+    config.PIPER_VOICE = os.getenv("PIPER_VOICE")
     config.HF_HOME = os.getenv("HF_HOME", "./cache")
     config.LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     config.HF_TOKEN = os.getenv("HF_TOKEN")
@@ -511,6 +533,8 @@ def get_available_voices_for_backend(backend: str | None = None) -> list[str]:
         return list(GEMINI_AVAILABLE_VOICES)
     if normalized_backend == HF_BACKEND:
         return list(HF_AVAILABLE_VOICES)
+    if normalized_backend == LOCAL_BACKEND:
+        return [DEFAULT_VOICE_BY_BACKEND[LOCAL_BACKEND]]
     return list(AVAILABLE_VOICES)
 
 

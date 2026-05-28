@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import logging
 import threading
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Protocol, Sequence
 from collections import deque
 from dataclasses import field, dataclass
 
@@ -94,13 +94,28 @@ class _StableFaceTrack:
     observed_this_pass: bool = False
 
 
+class FaceIdentityIdentifier(Protocol):
+    """Face identifier surface used by the background worker."""
+
+    db: Any
+    recognition_available: bool
+
+    def identify(
+        self,
+        frame_bgr: NDArray[np.uint8],
+        targets: list[HeadTrackerTarget],
+    ) -> list[IdentifiedTarget]:
+        """Identify detector targets in a camera frame."""
+        ...
+
+
 class FaceIdentifierWorker:
     """Poll camera frames and update thread-safe face identity perception state."""
 
     def __init__(
         self,
         camera_worker: object,
-        identifier: Any,
+        identifier: FaceIdentityIdentifier,
         *,
         rate_hz: float = 2.5,
         camera_horizontal_fov_deg: float | None = None,
@@ -155,9 +170,9 @@ class FaceIdentifierWorker:
             self._thread.join(timeout=1.0)
             self._thread = None
 
-    def identify(self, frame_bgr: NDArray[np.uint8], targets: list[object]) -> list[IdentifiedTarget]:
+    def identify(self, frame_bgr: NDArray[np.uint8], targets: list[HeadTrackerTarget]) -> list[IdentifiedTarget]:
         """Identify targets synchronously using the owned identifier."""
-        return self.identifier.identify(frame_bgr, targets)  # type: ignore[arg-type]
+        return self.identifier.identify(frame_bgr, targets)
 
     def snapshot(self) -> PerceptionSnapshot:
         """Return a thread-safe snapshot of visible people and last-seen metadata."""

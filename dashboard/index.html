@@ -27,6 +27,11 @@
             <span class="status-key">Backend</span>
             <span class="status-val" id="backend-state">checking</span>
           </span>
+          <span class="status-item">
+            <span class="status-dot" id="transport-dot"></span>
+            <span class="status-key">Link</span>
+            <span class="status-val" id="transport-state">checking</span>
+          </span>
           <span class="status-item" id="process-pill" hidden>
             <span class="status-dot" id="process-dot"></span>
             <span class="status-key">App</span>
@@ -101,6 +106,54 @@
             <ol id="people-list" class="people-list"></ol>
           </div>
 
+          <div class="card diagnostics-card">
+            <div class="card-head">
+              <div class="card-title">Diagnostics</div>
+            </div>
+            <dl class="metric-grid">
+              <div>
+                <dt>Control</dt>
+                <dd id="diag-control-host">-</dd>
+              </div>
+              <div>
+                <dt>Media</dt>
+                <dd id="diag-media-host">-</dd>
+              </div>
+              <div>
+                <dt>Daemon</dt>
+                <dd id="diag-daemon">-</dd>
+              </div>
+              <div>
+                <dt>Media state</dt>
+                <dd id="diag-media-state">-</dd>
+              </div>
+              <div>
+                <dt>Health</dt>
+                <dd id="diag-health">-</dd>
+              </div>
+              <div>
+                <dt>Camera</dt>
+                <dd id="diag-camera">-</dd>
+              </div>
+              <div>
+                <dt>Audio</dt>
+                <dd id="diag-audio">-</dd>
+              </div>
+              <div>
+                <dt>STT</dt>
+                <dd id="diag-stt">-</dd>
+              </div>
+              <div>
+                <dt>LLM</dt>
+                <dd id="diag-llm">-</dd>
+              </div>
+              <div>
+                <dt>TTS</dt>
+                <dd id="diag-tts">-</dd>
+              </div>
+            </dl>
+          </div>
+
           <details class="card settings-card" id="settings-drawer">
             <summary>
               <span class="card-title">Settings</span>
@@ -133,6 +186,7 @@
                 <div class="settings-section-title">Backend</div>
                 <div class="backend-grid" id="backend-grid">
                   <label class="choice"><input type="radio" name="backend" value="huggingface" /> <span>Hugging Face</span></label>
+                  <label class="choice"><input type="radio" name="backend" value="local" /> <span>Local Mac</span></label>
                   <label class="choice"><input type="radio" name="backend" value="openai" /> <span>OpenAI</span></label>
                   <label class="choice"><input type="radio" name="backend" value="gemini" /> <span>Gemini</span></label>
                 </div>

@@ -53,6 +53,10 @@ face_recognition = [
   "insightface>=0.7",
   "onnxruntime",
 ]
+local_voice = [
+  "mlx-whisper",
+  "piper-tts",
+]
 all_vision = [
   "accelerate>=1.13.0",
   "torch>=2.1",

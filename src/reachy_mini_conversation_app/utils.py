@@ -7,6 +7,7 @@ import subprocess
 from typing import TYPE_CHECKING, Optional
 
 from reachy_mini import ReachyMini
+from reachy_mini_conversation_app.transport import HARDWARE_PROFILES
 from reachy_mini_conversation_app.camera_worker import CameraWorker
 from reachy_mini_conversation_app.vision.head_tracking import HeadTracker
 
@@ -74,6 +75,12 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
         default=None,
         help="[Optional] Robot name to target. Must match the daemon's --robot-name when connecting to a specific robot, mainly useful for development with multiple robots.",
     )
+    parser.add_argument(
+        "--hardware-profile",
+        choices=list(HARDWARE_PROFILES),
+        default="auto",
+        help="Hardware optimization profile. auto prefers the direct Mac/Reachy wired link when available.",
+    )
     return parser.parse_known_args()
 
 
@@ -81,6 +88,7 @@ def initialize_camera_and_vision(
     args: argparse.Namespace,
     current_robot: ReachyMini,
     spatial_audio_source: SpatialAudioSource | None = None,
+    performance_diagnostics: object | None = None,
 ) -> tuple[CameraWorker | None, VisionProcessor | None]:
     """Initialize camera capture, optional head tracking, and optional local vision."""
     camera_worker: Optional[CameraWorker] = None
@@ -114,10 +122,15 @@ def initialize_camera_and_vision(
                     f"Failed to initialize {args.head_tracker} head tracker: {e}",
                 ) from e
 
-        if spatial_audio_source is None:
+        if spatial_audio_source is None and performance_diagnostics is None:
             camera_worker = CameraWorker(current_robot, head_tracker)
         else:
-            camera_worker = CameraWorker(current_robot, head_tracker, spatial_audio_source=spatial_audio_source)
+            camera_worker = CameraWorker(
+                current_robot,
+                head_tracker,
+                spatial_audio_source=spatial_audio_source,
+                performance_diagnostics=performance_diagnostics,
+            )
 
         if args.local_vision:
             result = subprocess.run(

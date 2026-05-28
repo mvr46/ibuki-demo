@@ -49,10 +49,12 @@ class CameraWorker:
         head_tracker: HeadTracker | None = None,
         doa_poller: DaemonDoAPoller | None = None,
         spatial_audio_source: SpatialAudioSource | None = None,
+        performance_diagnostics: object | None = None,
     ) -> None:
         """Initialize."""
         self.reachy_mini = reachy_mini
         self.head_tracker = head_tracker
+        self.performance_diagnostics = performance_diagnostics
 
         self.latest_frame: NDArray[np.uint8] | None = None
         self.frame_lock = threading.Lock()
@@ -680,6 +682,9 @@ class CameraWorker:
                     # Keep the latest frame available for tools and UI consumers
                     with self.frame_lock:
                         self.latest_frame = frame
+                    record_frame = getattr(self.performance_diagnostics, "record_camera_frame", None)
+                    if callable(record_frame):
+                        record_frame()
 
                     if self.previous_head_tracking_state and not self.is_head_tracking_enabled:
                         # Reuse the face-lost interpolation path to return smoothly to neutral

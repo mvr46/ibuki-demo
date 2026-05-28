@@ -18,12 +18,35 @@ type BackendStatus = {
   can_proceed_with_openai?: boolean;
   can_proceed_with_gemini?: boolean;
   can_proceed_with_hf?: boolean;
+  can_proceed_with_local?: boolean;
+  ollama_base_url?: string;
+  ollama_model?: string;
   requires_restart?: boolean;
   backend_unavailable?: boolean;
   backend_unavailable_reason?: string;
 };
 
+type PerformanceStatus = {
+  daemon_rtt_ms?: number | null;
+  daemon_state?: string | null;
+  media_state?: Record<string, unknown>;
+  transport?: Record<string, unknown>;
+  health_checks?: Record<string, unknown>;
+  camera_frame_age_ms?: number | null;
+  camera_fps?: number | null;
+  audio_input_frames?: number;
+  audio_output_frames?: number;
+  dropped_audio_frames?: number;
+  audio_queue_depth_s?: number | null;
+  stt_ms?: number | null;
+  llm_first_token_ms?: number | null;
+  llm_total_ms?: number | null;
+  tts_ms?: number | null;
+  first_audio_ms?: number | null;
+};
+
 type DashboardStatus = BackendStatus & {
+  performance?: PerformanceStatus;
   camera: {
     available: boolean;
     frame_available: boolean;
@@ -110,6 +133,7 @@ type PersonalityPayload = {
 const OPENAI_BACKEND = "openai";
 const GEMINI_BACKEND = "gemini";
 const HF_BACKEND = "huggingface";
+const LOCAL_BACKEND = "local";
 const DEFAULT_BACKEND = HF_BACKEND;
 
 const AUTO_WITH: Record<string, string[]> = {
@@ -141,10 +165,12 @@ const elements = {
   cameraDot: byId("camera-dot"),
   faceDot: byId("face-dot"),
   backendDot: byId("backend-dot"),
+  transportDot: byId("transport-dot"),
   processDot: byId("process-dot"),
   cameraState: byId("camera-state"),
   faceState: byId("face-state"),
   backendState: byId("backend-state"),
+  transportState: byId("transport-state"),
   processState: byId("process-state"),
   processPill: byId("process-pill"),
   processSection: byId("process-section"),
@@ -164,6 +190,16 @@ const elements = {
   cameraEmpty: byId("camera-empty"),
   cameraHelp: byId("camera-help"),
   refreshFaceState: byId<HTMLButtonElement>("refresh-face-state"),
+  diagControlHost: byId("diag-control-host"),
+  diagMediaHost: byId("diag-media-host"),
+  diagDaemon: byId("diag-daemon"),
+  diagMediaState: byId("diag-media-state"),
+  diagHealth: byId("diag-health"),
+  diagCamera: byId("diag-camera"),
+  diagAudio: byId("diag-audio"),
+  diagStt: byId("diag-stt"),
+  diagLlm: byId("diag-llm"),
+  diagTts: byId("diag-tts"),
   backendGrid: byId("backend-grid"),
   apiKey: byId<HTMLInputElement>("api-key"),
   hfFields: byId("hf-fields"),
@@ -229,7 +265,26 @@ function backendReady(status: DashboardStatus | null): boolean {
   const backend = status.backend_provider || DEFAULT_BACKEND;
   if (backend === OPENAI_BACKEND) return !!status.can_proceed_with_openai;
   if (backend === GEMINI_BACKEND) return !!status.can_proceed_with_gemini;
+  if (backend === LOCAL_BACKEND) return !!status.can_proceed_with_local;
   return !!status.can_proceed_with_hf;
+}
+
+function shortValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "-";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  return String(value);
+}
+
+function formatMs(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`;
+  return `${value.toFixed(value < 10 ? 1 : 0)}ms`;
+}
+
+function formatFps(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+  return `${value.toFixed(1)} fps`;
 }
 
 function renderStatus(): void {
@@ -238,6 +293,13 @@ function renderStatus(): void {
   const faceOk = !!status?.face_recognition.available;
   const backendUnavailable = !!status?.backend_unavailable;
   const backendOk = backendReady(status);
+  const performance = status?.performance;
+  const transport = performance?.transport || {};
+  const mediaHost = shortValue(transport.media_host);
+  const mediaSource = shortValue(transport.media_host_source);
+  const rttMs = performance?.daemon_rtt_ms;
+  const linkOk = mediaHost !== "-" && (rttMs === null || rttMs === undefined || rttMs <= 15);
+  const linkWarn = mediaSource === "daemon_wlan_ip" || (rttMs !== null && rttMs !== undefined && rttMs > 15);
 
   elements.cameraState.textContent = !status
     ? "checking"
@@ -256,12 +318,33 @@ function renderStatus(): void {
     : backendUnavailable
       ? "app offline"
     : `${status.backend_provider || DEFAULT_BACKEND}${status.requires_restart ? " pending" : ""}`;
+  elements.transportState.textContent = !status ? "checking" : `${mediaHost}${rttMs ? ` ${formatMs(rttMs)}` : ""}`;
   setDot(elements.cameraDot, cameraOk ? "ok" : status?.camera.available ? "warn" : "err");
   setDot(elements.faceDot, faceOk ? "ok" : "warn");
   setDot(elements.backendDot, backendUnavailable ? "warn" : backendOk ? "ok" : "warn");
+  setDot(elements.transportDot, !status ? "idle" : linkWarn ? "warn" : linkOk ? "ok" : "warn");
 
   renderPeople();
+  renderDiagnostics();
   renderBackendControls();
+}
+
+function renderDiagnostics(): void {
+  const performance = state.status?.performance || {};
+  const transport = performance.transport || {};
+  const mediaState = performance.media_state || {};
+  const health = performance.health_checks || {};
+  const mediaSource = shortValue(transport.media_host_source);
+  elements.diagControlHost.textContent = shortValue(transport.control_host);
+  elements.diagMediaHost.textContent = `${shortValue(transport.media_host)} (${mediaSource})`;
+  elements.diagDaemon.textContent = `${shortValue(performance.daemon_state)} / ${formatMs(performance.daemon_rtt_ms)}`;
+  elements.diagMediaState.textContent = `available ${shortValue(mediaState.available)}, released ${shortValue(mediaState.released)}`;
+  elements.diagHealth.textContent = `daemon ${shortValue(health.daemon_running)}, media ${shortValue(health.media_available)}, doa ${shortValue(health.doa_available)}, wired ${shortValue(health.wired_link_present)}`;
+  elements.diagCamera.textContent = `${formatFps(performance.camera_fps)} / age ${formatMs(performance.camera_frame_age_ms)}`;
+  elements.diagAudio.textContent = `in ${shortValue(performance.audio_input_frames)}, out ${shortValue(performance.audio_output_frames)}, drop ${shortValue(performance.dropped_audio_frames)}, q ${shortValue(performance.audio_queue_depth_s)}s`;
+  elements.diagStt.textContent = formatMs(performance.stt_ms);
+  elements.diagLlm.textContent = `${formatMs(performance.llm_first_token_ms)} first / ${formatMs(performance.llm_total_ms)} total`;
+  elements.diagTts.textContent = `${formatMs(performance.tts_ms)} / first audio ${formatMs(performance.first_audio_ms)}`;
 }
 
 function renderProcessControls(): void {

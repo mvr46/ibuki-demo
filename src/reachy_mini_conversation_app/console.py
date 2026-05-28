@@ -17,6 +17,8 @@ import asyncio
 import logging
 from typing import List, Optional
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from fastrtc import AdditionalOutputs, audio_to_float32
 from scipy.signal import resample
@@ -25,6 +27,7 @@ from reachy_mini import ReachyMini
 from reachy_mini.media.media_manager import MediaBackend
 from reachy_mini_conversation_app.config import (
     HF_BACKEND,
+    LOCAL_BACKEND,
     GEMINI_BACKEND,
     LOCKED_PROFILE,
     OPENAI_BACKEND,
@@ -44,6 +47,7 @@ from reachy_mini_conversation_app.config import (
     refresh_runtime_config_from_env,
 )
 from reachy_mini_conversation_app.dashboard import DashboardLogBuffer, mount_dashboard_routes
+from reachy_mini_conversation_app.transport import probe_host, measure_http_rtt_ms
 from reachy_mini_conversation_app.startup_settings import read_startup_settings, write_startup_settings
 from reachy_mini_conversation_app.audio.startup_config import apply_audio_startup_config
 from reachy_mini_conversation_app.conversation_handler import ConversationHandler
@@ -96,6 +100,18 @@ def _estimate_pending_playback_seconds(robot: ReachyMini) -> float:
         return 0.0
 
     return max(0.0, pending_ns / 1e9)
+
+
+def _fetch_json_dict(url: str, *, timeout: float) -> dict[str, object]:
+    """Fetch a JSON object from a robot health endpoint."""
+    try:
+        import json
+
+        with urlopen(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, TimeoutError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 class LocalStream:
@@ -173,6 +189,8 @@ class LocalStream:
 
     def _has_required_key(self, backend: str) -> bool:
         """Return whether the requested backend has its required credential."""
+        if backend == LOCAL_BACKEND:
+            return True
         if backend == GEMINI_BACKEND:
             return self._has_key(config.GEMINI_API_KEY)
         if backend == HF_BACKEND:
@@ -184,6 +202,8 @@ class LocalStream:
         """Return the env var users need for a backend, if any."""
         if backend == GEMINI_BACKEND:
             return "GEMINI_API_KEY"
+        if backend == LOCAL_BACKEND:
+            return "OLLAMA_BASE_URL"
         if backend == HF_BACKEND:
             return HF_REALTIME_WS_URL_ENV
         return "OPENAI_API_KEY"
@@ -336,6 +356,41 @@ class LocalStream:
         """Read the saved startup personality from instance-local UI settings."""
         return read_startup_settings(self._instance_path).profile
 
+    def _refresh_performance_health(self) -> None:
+        """Best-effort robot health probes for dashboard diagnostics."""
+        diagnostics = getattr(getattr(self.handler, "deps", None), "performance_diagnostics", None)
+        if diagnostics is None:
+            return
+
+        client = getattr(self._robot, "client", None)
+        host = getattr(client, "host", "localhost")
+        port = getattr(client, "port", 8000)
+        base_url = f"http://{host}:{port}"
+        daemon_rtt = measure_http_rtt_ms(f"{base_url}/api/daemon/status", timeout_seconds=0.5)
+        daemon_status = _fetch_json_dict(f"{base_url}/api/daemon/status", timeout=0.5)
+        media_status = _fetch_json_dict(f"{base_url}/api/media/status", timeout=0.5)
+        doa_status = _fetch_json_dict(f"{base_url}/api/state/doa", timeout=0.5)
+        full_state = _fetch_json_dict(f"{base_url}/api/state/full", timeout=0.5)
+        wired_link = probe_host("10.42.0.2", int(port), timeout_seconds=0.2)
+
+        set_daemon = getattr(diagnostics, "set_daemon", None)
+        if callable(set_daemon):
+            set_daemon(rtt_ms=daemon_rtt, state=daemon_status.get("state"))
+        set_media = getattr(diagnostics, "set_media_state", None)
+        if callable(set_media):
+            set_media(media_status)
+        set_health = getattr(diagnostics, "set_health_checks", None)
+        if callable(set_health):
+            set_health(
+                {
+                    "daemon_running": daemon_status.get("state") == "running",
+                    "media_available": bool(media_status.get("available")) and not bool(media_status.get("released")),
+                    "doa_available": "angle" in doa_status or "speech_detected" in doa_status,
+                    "full_state_available": "timestamp" in full_state or "head_pose" in full_state,
+                    "wired_link_present": wired_link,
+                }
+            )
+
     def _init_settings_ui_if_needed(self) -> None:
         """Attach minimal settings UI to the settings app.
 
@@ -368,10 +423,12 @@ class LocalStream:
             hf_port: Optional[int] = None
 
         def _status_payload() -> dict[str, object]:
+            self._refresh_performance_health()
             backend_provider = get_backend_choice()
             active_backend = self._active_backend()
             has_openai_key = self._has_required_key(OPENAI_BACKEND)
             has_gemini_key = self._has_required_key(GEMINI_BACKEND)
+            has_local_backend = self._has_required_key(LOCAL_BACKEND)
             hf_session_url = get_hf_session_url()
             hf_ws_url = get_hf_direct_ws_url()
             hf_direct_host, hf_direct_port = parse_hf_direct_target(hf_ws_url)
@@ -383,6 +440,7 @@ class LocalStream:
             can_proceed_with_openai = has_openai_key
             can_proceed_with_gemini = has_gemini_key
             can_proceed_with_hf = has_hf_connection
+            can_proceed_with_local = has_local_backend
             can_proceed = self._has_required_key(active_backend)
             requires_restart = backend_provider != active_backend
             return {
@@ -391,6 +449,7 @@ class LocalStream:
                 "has_key": can_proceed,
                 "has_openai_key": has_openai_key,
                 "has_gemini_key": has_gemini_key,
+                "has_local_backend": has_local_backend,
                 "has_hf_session_url": has_hf_session_url,
                 "has_hf_ws_url": has_hf_ws_url,
                 "has_hf_connection": has_hf_connection,
@@ -401,6 +460,9 @@ class LocalStream:
                 "can_proceed_with_openai": can_proceed_with_openai,
                 "can_proceed_with_gemini": can_proceed_with_gemini,
                 "can_proceed_with_hf": can_proceed_with_hf,
+                "can_proceed_with_local": can_proceed_with_local,
+                "ollama_base_url": getattr(config, "OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+                "ollama_model": getattr(config, "OLLAMA_MODEL", "gemma3:latest"),
                 "requires_restart": requires_restart,
             }
 
@@ -450,7 +512,7 @@ class LocalStream:
         @self._settings_app.post("/backend_config")
         def _set_backend(payload: BackendPayload) -> JSONResponse:
             backend = payload.backend.strip().lower()
-            if backend not in {OPENAI_BACKEND, GEMINI_BACKEND, HF_BACKEND}:
+            if backend not in {OPENAI_BACKEND, GEMINI_BACKEND, HF_BACKEND, LOCAL_BACKEND}:
                 return JSONResponse({"ok": False, "error": "invalid_backend"}, status_code=400)
 
             api_key = (payload.api_key or "").strip()
@@ -555,9 +617,11 @@ class LocalStream:
         # If key is still missing -> wait until provided via the settings UI
         if not self._has_required_key(active_backend):
             requirement_name = self._requirement_name(active_backend)
-            if active_backend == HF_BACKEND:
+            if active_backend in {HF_BACKEND, LOCAL_BACKEND}:
                 logger.error(
-                    "%s not found. Set it in the app .env before starting the Hugging Face backend.", requirement_name
+                    "%s not found. Set it in the app .env before starting the %s backend.",
+                    requirement_name,
+                    active_backend,
                 )
                 return
             else:
@@ -670,6 +734,10 @@ class LocalStream:
         while not self._stop_event.is_set():
             audio_frame = self._robot.media.get_audio_sample()
             if audio_frame is not None:
+                diagnostics = getattr(self.handler.deps, "performance_diagnostics", None)
+                record_input = getattr(diagnostics, "record_audio_input_frame", None)
+                if callable(record_input):
+                    record_input()
                 await self.handler.receive((input_sample_rate, audio_frame))
             await asyncio.sleep(0)  # avoid busy loop
 
@@ -722,8 +790,14 @@ class LocalStream:
                 if head_wobbler is not None:
                     playback_delay_s = _estimate_pending_playback_seconds(self._robot)
                     head_wobbler.feed_pcm(audio_data.reshape(1, -1), input_sample_rate, start_delay_s=playback_delay_s)
+                else:
+                    playback_delay_s = _estimate_pending_playback_seconds(self._robot)
 
                 self._robot.media.push_audio_sample(audio_frame)
+                diagnostics = getattr(self.handler.deps, "performance_diagnostics", None)
+                record_output = getattr(diagnostics, "record_audio_output_frame", None)
+                if callable(record_output):
+                    record_output(queue_depth_s=playback_delay_s)
 
             else:
                 logger.debug("Ignoring output type=%s", type(handler_output).__name__)
