@@ -23,7 +23,7 @@ from reachy_mini_conversation_app.vision.head_tracking import HeadTracker, HeadT
 
 logger = logging.getLogger(__name__)
 
-_PROCESS_START_TIMEOUT = 20.0
+PROCESS_START_TIMEOUT = 90.0
 _REQUEST_TIMEOUT = 0.5
 _SHUTDOWN_TIMEOUT = 2.0
 _HEADER_STRUCT = struct.Struct("!I")
@@ -140,9 +140,15 @@ def _is_tracker_targets(payload: object) -> TypeGuard[list[HeadTrackerTarget]]:
 class YoloHeadTrackerProcess:
     """Proxy that runs the optional YOLO head tracker out of process."""
 
-    def __init__(self, *, request_timeout: float = _REQUEST_TIMEOUT) -> None:
+    def __init__(
+        self,
+        *,
+        request_timeout: float = _REQUEST_TIMEOUT,
+        startup_timeout: float = PROCESS_START_TIMEOUT,
+    ) -> None:
         """Start the child process and wait until the tracker is ready."""
         self.request_timeout = request_timeout
+        self.startup_timeout = startup_timeout
         self._closed = False
         self._send_lock = threading.Lock()
         self._messages: queue.Queue[tuple[str, object | None]] = queue.Queue()
@@ -189,7 +195,11 @@ class YoloHeadTrackerProcess:
         self._reader.start()
         atexit.register(self.close)
 
-        message = self._wait_for_message(_PROCESS_START_TIMEOUT)
+        try:
+            message = self._wait_for_message(self.startup_timeout)
+        except Exception:
+            self.close()
+            raise
         if not (isinstance(message, tuple) and len(message) == 2 and isinstance(message[0], str)):
             self.close()
             raise RuntimeError(f"yolo head tracker returned an invalid startup message: {message!r}")

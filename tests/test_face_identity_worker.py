@@ -19,6 +19,13 @@ class _FakeIdentifier:
         return self.identified
 
 
+class _DetectionOnlyIdentifier:
+    recognition_available = False
+
+    def observe(self, frame: np.ndarray, targets: list[HeadTrackerTarget]) -> list[FaceObservation]:
+        return [FaceObservation(target=target, name=None, similarity=0.0, embedding=None) for target in targets]
+
+
 class _FakeDB:
     def __init__(self) -> None:
         self.saved: list[tuple[str, np.ndarray]] = []
@@ -75,6 +82,30 @@ def test_face_identity_worker_processes_camera_targets() -> None:
     assert snapshot.visible[0].last_observed_at == 10.4
     assert events[0].kind == "entered"
     assert events[0].name == "Alice"
+
+
+def test_face_identity_worker_can_expose_detection_only_targets() -> None:
+    """Detector-only fallback should still expose stable face boxes."""
+    target = _target()
+    worker = FaceIdentifierWorker(
+        _camera([target]),
+        _DetectionOnlyIdentifier(),
+        require_embedding_to_confirm=False,
+    )
+
+    worker._process_once(10.0)
+    assert worker.snapshot().visible == ()
+    worker._process_once(10.4)
+
+    visible = worker.snapshot().visible
+    events = worker.drain_events()
+    assert len(visible) == 1
+    assert visible[0].name is None
+    assert visible[0].embedding is None
+    assert visible[0].can_remember is False
+    assert worker.recognition_available is False
+    assert events[0].kind == "entered"
+    assert events[0].name is None
 
 
 def test_face_identity_worker_emits_named_and_left_events() -> None:

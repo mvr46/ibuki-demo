@@ -1,0 +1,2 @@
+reachy_mini_conversation_app
+reachy_talk_data

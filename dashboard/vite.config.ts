@@ -6,10 +6,47 @@ import { defineConfig, type Plugin } from "vite";
 
 const dashboardDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(dashboardDir, "..");
+const projectSrc = path.resolve(projectRoot, "src");
+const pythonSitePackages = path.resolve(projectRoot, ".venv/lib/python3.12/site-packages");
+const gstreamerPythonRoot = path.resolve(pythonSitePackages, "gstreamer_python");
+const gstreamerLibsRoot = path.resolve(pythonSitePackages, "gstreamer_libs");
+const gstreamerGtkRoot = path.resolve(pythonSitePackages, "gstreamer_gtk");
+const gstreamerPluginsRoot = path.resolve(pythonSitePackages, "gstreamer_plugins");
+const gstreamerPluginsLibsRoot = path.resolve(pythonSitePackages, "gstreamer_plugins_libs");
+const gstreamerPythonSite = path.resolve(
+  gstreamerPythonRoot,
+  "lib/python3.12/site-packages",
+);
+const gstreamerTypelibPaths = [
+  path.resolve(gstreamerPythonRoot, "lib/girepository-1.0"),
+  path.resolve(gstreamerLibsRoot, "lib/girepository-1.0"),
+  path.resolve(gstreamerGtkRoot, "lib/girepository-1.0"),
+];
+const gstreamerLibraryPaths = [
+  path.resolve(gstreamerPythonRoot, "lib"),
+  path.resolve(gstreamerLibsRoot, "lib"),
+  path.resolve(gstreamerGtkRoot, "lib"),
+  path.resolve(gstreamerPluginsRoot, "lib"),
+  path.resolve(gstreamerPluginsLibsRoot, "lib"),
+];
+const gstreamerPluginPaths = [
+  path.resolve(gstreamerLibsRoot, "lib/gstreamer-1.0"),
+  path.resolve(gstreamerGtkRoot, "lib/gstreamer-1.0"),
+  path.resolve(gstreamerPluginsRoot, "lib/gstreamer-1.0"),
+  path.resolve(gstreamerPluginsLibsRoot, "lib/gstreamer-1.0"),
+];
+const gstreamerPluginScanner = path.resolve(
+  gstreamerLibsRoot,
+  "libexec/gstreamer-1.0/gst-plugin-scanner",
+);
 const backendTarget = process.env.DASHBOARD_BACKEND_URL || "http://127.0.0.1:7860";
 const defaultCommand =
   process.env.DASHBOARD_DEFAULT_COMMAND ||
   "uv run python -m reachy_mini_conversation_app.main --head-tracker yolo";
+const backendProbeTimeoutMs = 250;
+const backendReadyPollMs = 500;
+const backendReadyPollAttempts = 120;
+const backendRouteProbeCacheMs = 1000;
 
 type ProcessLogEvent = {
   id: number;
@@ -26,6 +63,29 @@ type CommandParts = {
   env: Record<string, string>;
 };
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function gstreamerSafeEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...baseEnv };
+  const pluginSuffix = path.join("gstreamer_python", "lib", "gstreamer-1.0");
+  for (const name of [
+    "GST_PLUGIN_PATH_1_0",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "GST_PLUGIN_PATH",
+    "GST_PLUGIN_SYSTEM_PATH",
+  ]) {
+    const value = env[name];
+    if (!value) continue;
+    env[name] = value
+      .split(path.delimiter)
+      .filter((entry) => !entry.endsWith(pluginSuffix))
+      .join(path.delimiter);
+  }
+  return env;
+}
+
 function dashboardProcessPlugin(): Plugin {
   const logs: ProcessLogEvent[] = [];
   const emitter = new EventEmitter();
@@ -38,6 +98,10 @@ function dashboardProcessPlugin(): Plugin {
   let signal: string | null = null;
   let stdoutRemainder = "";
   let stderrRemainder = "";
+  let backendReadyAnnouncedForStartedAt: string | null = null;
+  let backendRoutesReady = false;
+  let lastBackendRouteProbeAt = 0;
+  let failureHint: string | null = null;
 
   function addLog(message: string, level: ProcessLogEvent["level"] = "INFO", category = "PROCESS"): void {
     const cleaned = message.trim();
@@ -57,6 +121,9 @@ function dashboardProcessPlugin(): Plugin {
 
   function classifyLine(line: string): string {
     const lowered = line.toLowerCase();
+    if (lowered.includes("reachy") || lowered.includes("robot") || lowered.includes("daemon") || lowered.includes("connectionerror")) {
+      return "ROBOT";
+    }
     if (lowered.includes("face") || lowered.includes("vision") || lowered.includes("camera") || lowered.includes("yolo")) {
       return "VISION";
     }
@@ -70,9 +137,59 @@ function dashboardProcessPlugin(): Plugin {
   }
 
   function levelForLine(line: string, fallback: ProcessLogEvent["level"]): ProcessLogEvent["level"] {
+    if (/^\s*INFO:/.test(line)) return "INFO";
     if (/\b(ERROR|CRITICAL|FATAL)\b/.test(line)) return "ERROR";
+    if (/^\s*(Traceback|ConnectionError|TimeoutError):?/.test(line)) return "ERROR";
     if (/\b(WARNING|WARN)\b/.test(line)) return "WARNING";
     return fallback;
+  }
+
+  function isReachyConversationCommand(): boolean {
+    return runningCommand.includes("reachy_mini_conversation_app.main");
+  }
+
+  function isBackendProbeNoise(line: string): boolean {
+    return /GET \/api\/dashboard\/status HTTP\/1\.1"\s+404 Not Found/.test(line);
+  }
+
+  function isTracebackNoise(line: string): boolean {
+    const trimmed = line.trim();
+    return (
+      trimmed === "Traceback (most recent call last):" ||
+      trimmed === "During handling of the above exception, another exception occurred:" ||
+      trimmed.startsWith("File \"") ||
+      trimmed.startsWith("with ReachyMini(") ||
+      trimmed.startsWith("client = ") ||
+      trimmed === "client.wait_for_connection(timeout=timeout)" ||
+      trimmed === "app.wrapped_run()" ||
+      trimmed.startsWith("self.client") ||
+      trimmed.startsWith("raise ") ||
+      /^[~^]+$/.test(trimmed)
+    );
+  }
+
+  function friendlyFailureForLine(line: string): string | null {
+    if (
+      line.includes("Timeout while waiting for connection with the server") ||
+      line.includes("Could not connect to daemon on localhost")
+    ) {
+      return "Robot unavailable: the local daemon is reachable, but robot telemetry is not streaming. Reconnect the robot to Wi-Fi and start again.";
+    }
+    if (
+      line.includes("Network connection attempt failed") ||
+      line.includes("Auto connection: both localhost and remote attempts failed") ||
+      line.includes("No address associated with hostname") ||
+      line.includes("nodename nor servname provided")
+    ) {
+      return "Robot unavailable: the daemon host is not reachable. Check Wi-Fi, hostname, and daemon status, then start again.";
+    }
+    return null;
+  }
+
+  function noteFailureHint(message: string): void {
+    if (failureHint === message) return;
+    failureHint = message;
+    addLog(message, "ERROR", "ROBOT");
   }
 
   function appendOutput(chunk: Buffer, stream: "stdout" | "stderr"): void {
@@ -83,6 +200,13 @@ function dashboardProcessPlugin(): Plugin {
     if (stream === "stdout") stdoutRemainder = remainder;
     else stderrRemainder = remainder;
     for (const line of lines) {
+      if (isBackendProbeNoise(line)) continue;
+      const friendlyFailure = friendlyFailureForLine(line);
+      if (friendlyFailure) {
+        noteFailureHint(friendlyFailure);
+        continue;
+      }
+      if (isReachyConversationCommand() && isTracebackNoise(line)) continue;
       addLog(line, levelForLine(line, fallbackLevel), classifyLine(line));
     }
   }
@@ -98,7 +222,30 @@ function dashboardProcessPlugin(): Plugin {
     return child !== null && child.exitCode === null && child.signalCode === null;
   }
 
-  function statusPayload(): Record<string, unknown> {
+  async function isBackendReady(): Promise<boolean> {
+    const now = Date.now();
+    if (backendRoutesReady) return true;
+    if (now - lastBackendRouteProbeAt < backendRouteProbeCacheMs) return false;
+    lastBackendRouteProbeAt = now;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), backendProbeTimeoutMs);
+    try {
+      const response = await fetch(new URL("/api/dashboard/status", backendTarget), {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      backendRoutesReady = response.ok;
+      return backendRoutesReady;
+    } catch {
+      backendRoutesReady = false;
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function statusPayload(): Promise<Record<string, unknown>> {
     return {
       available: true,
       running: isRunning(),
@@ -110,7 +257,27 @@ function dashboardProcessPlugin(): Plugin {
       exitCode,
       signal,
       backendTarget,
+      backendReady: await isBackendReady(),
+      failureHint,
     };
+  }
+
+  async function waitForBackendReady(runStartedAt: string): Promise<void> {
+    for (let attempt = 0; attempt < backendReadyPollAttempts; attempt += 1) {
+      if (!isRunning() || startedAt !== runStartedAt) return;
+      if (await isBackendReady()) {
+        if (backendReadyAnnouncedForStartedAt !== runStartedAt) {
+          backendReadyAnnouncedForStartedAt = runStartedAt;
+          addLog(`Dashboard API is ready at ${backendTarget}`, "INFO", "PROCESS");
+        }
+        return;
+      }
+      await sleep(backendReadyPollMs);
+    }
+
+    if (isRunning() && startedAt === runStartedAt) {
+      addLog(`Still waiting for dashboard API at ${backendTarget}`, "WARNING", "PROCESS");
+    }
   }
 
   function splitCommand(commandText: string): string[] {
@@ -177,13 +344,35 @@ function dashboardProcessPlugin(): Plugin {
     exitedAt = null;
     exitCode = null;
     signal = null;
+    backendReadyAnnouncedForStartedAt = null;
+    backendRoutesReady = false;
+    lastBackendRouteProbeAt = 0;
+    failureHint = null;
     stdoutRemainder = "";
     stderrRemainder = "";
     addLog(`$ ${runningCommand}`, "INFO", "PROCESS");
+    addLog(`Waiting for dashboard API at ${backendTarget}`, "INFO", "PROCESS");
 
     child = spawn(parsed.command, parsed.args, {
       cwd: projectRoot,
-      env: { ...process.env, PYTHONUNBUFFERED: "1", ...parsed.env },
+      env: {
+        ...gstreamerSafeEnv(process.env),
+        GST_REGISTRY_FORK: "no",
+        GST_REGISTRY_UPDATE: "no",
+        GST_PLUGIN_PATH_1_0: [gstreamerPluginPaths.join(path.delimiter), process.env.GST_PLUGIN_PATH_1_0]
+          .filter(Boolean)
+          .join(path.delimiter),
+        GST_PLUGIN_SCANNER_1_0: process.env.GST_PLUGIN_SCANNER_1_0 || gstreamerPluginScanner,
+        GI_TYPELIB_PATH: [gstreamerTypelibPaths.join(path.delimiter), process.env.GI_TYPELIB_PATH]
+          .filter(Boolean)
+          .join(path.delimiter),
+        DYLD_LIBRARY_PATH: [gstreamerLibraryPaths.join(path.delimiter), process.env.DYLD_LIBRARY_PATH]
+          .filter(Boolean)
+          .join(path.delimiter),
+        PYTHONUNBUFFERED: "1",
+        PYTHONPATH: [projectSrc, gstreamerPythonSite, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+        ...parsed.env,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stdout.on("data", (chunk: Buffer) => appendOutput(chunk, "stdout"));
@@ -198,10 +387,14 @@ function dashboardProcessPlugin(): Plugin {
       exitedAt = new Date().toISOString();
       exitCode = code;
       signal = exitSignal;
+      if (code && code !== 0 && !failureHint) {
+        failureHint = `Command exited with code ${code}. Check live logs for details.`;
+      }
       const suffix = exitSignal ? `signal ${exitSignal}` : `code ${code ?? "unknown"}`;
       addLog(`Command exited with ${suffix}`, code === 0 ? "INFO" : "WARNING", "PROCESS");
       child = null;
     });
+    void waitForBackendReady(startedAt);
   }
 
   function stopProcess(): void {
@@ -236,6 +429,148 @@ function dashboardProcessPlugin(): Plugin {
     return `id: ${event.id}\nevent: log\ndata: ${JSON.stringify(event)}\n\n`;
   }
 
+  function isBackendProxyPath(pathname: string): boolean {
+    return (
+      pathname.startsWith("/api") ||
+      pathname === "/backend_config" ||
+      pathname.startsWith("/personalities") ||
+      pathname.startsWith("/voices") ||
+      pathname === "/ready" ||
+      pathname === "/status"
+    );
+  }
+
+  function fallbackBackendStatus(): Record<string, unknown> {
+    return {
+      active_backend: "huggingface",
+      backend_provider: "huggingface",
+      has_key: false,
+      has_openai_key: false,
+      has_gemini_key: false,
+      has_hf_session_url: false,
+      has_hf_ws_url: false,
+      has_hf_connection: false,
+      hf_connection_mode: "deployed",
+      hf_direct_host: "localhost",
+      hf_direct_port: 8765,
+      can_proceed: false,
+      can_proceed_with_openai: false,
+      can_proceed_with_gemini: false,
+      can_proceed_with_hf: false,
+      requires_restart: false,
+      backend_unavailable: true,
+      backend_unavailable_reason: isRunning()
+        ? "App process is starting; dashboard API is not ready yet."
+        : failureHint || "App process is not running.",
+    };
+  }
+
+  function fallbackDashboardStatus(): Record<string, unknown> {
+    return {
+      ...fallbackBackendStatus(),
+      camera: {
+        available: false,
+        frame_available: false,
+        head_tracker: null,
+      },
+      face_recognition: {
+        available: false,
+        db_path: null,
+        visible_count: 0,
+        people: [],
+      },
+    };
+  }
+
+  function sendEmptyImage(res: {
+    statusCode: number;
+    setHeader: (name: string, value: string) => void;
+    end: (body?: string) => void;
+  }): void {
+    res.statusCode = 503;
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Cache-Control", "no-store");
+    res.end("camera_unavailable");
+  }
+
+  function sendBackendWaitingEvent(res: {
+    writeHead: (statusCode: number, headers: Record<string, string>) => void;
+    write: (chunk: string) => void;
+    end: () => void;
+  }): void {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(
+      formatSse({
+        id: nextLogId++,
+        type: "log",
+        createdAt: new Date().toISOString(),
+        level: "INFO",
+        category: "SYSTEM",
+        message: `Waiting for app API at ${backendTarget}`,
+      }),
+    );
+    setTimeout(() => res.end(), 2000);
+  }
+
+  async function handleBackendFallback(
+    req: NodeJS.ReadableStream & { method?: string; url?: string },
+    res: {
+      statusCode: number;
+      setHeader: (name: string, value: string) => void;
+      writeHead: (statusCode: number, headers: Record<string, string>) => void;
+      write: (chunk: string) => void;
+      end: (body?: string) => void;
+    },
+    next: () => void,
+  ): Promise<void> {
+    const url = new URL(req.url || "/", "http://localhost");
+    if (!isBackendProxyPath(url.pathname)) {
+      next();
+      return;
+    }
+
+    if (await isBackendReady()) {
+      next();
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/dashboard/status") {
+      sendJson(res, 200, fallbackDashboardStatus());
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/face/state") {
+      sendJson(res, 200, { ok: true, available: false, faces: [] });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/face/frame.jpg") {
+      sendEmptyImage(res);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/dashboard/events") {
+      sendBackendWaitingEvent(res);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/status") {
+      sendJson(res, 200, fallbackBackendStatus());
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/ready") {
+      sendJson(res, 200, { ready: false });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/voices") {
+      sendJson(res, 200, []);
+      return;
+    }
+
+    sendJson(res, 503, { ok: false, error: "app_backend_not_ready" });
+  }
+
   return {
     name: "reachy-dashboard-process",
     configureServer(server) {
@@ -248,7 +583,7 @@ function dashboardProcessPlugin(): Plugin {
 
         try {
           if (req.method === "GET" && url.pathname === "/__dashboard/process/status") {
-            sendJson(res, 200, statusPayload());
+            sendJson(res, 200, await statusPayload());
             return;
           }
 
@@ -257,13 +592,13 @@ function dashboardProcessPlugin(): Plugin {
             const body = rawBody ? JSON.parse(rawBody) : {};
             const commandText = String(body.command || defaultCommand).trim();
             startProcess(commandText);
-            sendJson(res, 200, statusPayload());
+            sendJson(res, 200, await statusPayload());
             return;
           }
 
           if (req.method === "POST" && url.pathname === "/__dashboard/process/stop") {
             stopProcess();
-            sendJson(res, 200, statusPayload());
+            sendJson(res, 200, await statusPayload());
             return;
           }
 
@@ -286,6 +621,10 @@ function dashboardProcessPlugin(): Plugin {
           const message = error instanceof Error ? error.message : "request_failed";
           sendJson(res, 400, { ok: false, error: message });
         }
+      });
+
+      server.middlewares.use((req, res, next) => {
+        void handleBackendFallback(req, res, next);
       });
 
       server.httpServer?.once("close", () => {

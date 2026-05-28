@@ -146,6 +146,7 @@ def mount_dashboard_routes(
     def _dashboard_status() -> JSONResponse:
         camera_worker = _camera_worker()
         face_worker = _face_identity_worker()
+        recognition_available = bool(getattr(face_worker, "recognition_available", face_worker is not None))
         db = getattr(getattr(face_worker, "identifier", None), "db", None)
         people = []
         if db is not None:
@@ -180,6 +181,7 @@ def mount_dashboard_routes(
             },
             "face_recognition": {
                 "available": face_worker is not None,
+                "recognition_available": recognition_available,
                 "db_path": str(getattr(db, "path", "")) if db is not None else None,
                 "people": people,
                 "visible_count": visible_count,
@@ -208,6 +210,7 @@ def mount_dashboard_routes(
         face_worker = _face_identity_worker()
         if face_worker is None or not callable(getattr(face_worker, "snapshot", None)):
             return JSONResponse({"ok": True, "available": False, "faces": []})
+        recognition_available = bool(getattr(face_worker, "recognition_available", True))
         focus_name = None
         if camera_worker is not None and callable(getattr(camera_worker, "get_speaker_focus_name", None)):
             focus_name = camera_worker.get_speaker_focus_name()
@@ -216,6 +219,7 @@ def mount_dashboard_routes(
             {
                 "ok": True,
                 "available": True,
+                "recognition_available": recognition_available,
                 "focus_name": focus_name,
                 "faces": [_face_payload(item, focus_name) for item in snapshot.visible],
             }

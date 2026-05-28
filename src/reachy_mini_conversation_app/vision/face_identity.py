@@ -51,6 +51,8 @@ class FaceObservation:
 class FaceIdentifier:
     """Identify YOLO face targets using a recognizer and persistent FaceDB."""
 
+    recognition_available = True
+
     def __init__(self, recognizer: FaceRecognizer, db: FaceDB, threshold: float = DEFAULT_THRESHOLD):
         """Initialize the identifier."""
         self.recognizer = recognizer
@@ -103,10 +105,42 @@ class FaceIdentifier:
         return observations
 
 
+class DetectionOnlyFaceIdentifier:
+    """Expose detector targets when local face-recognition models are unavailable."""
+
+    recognition_available = False
+    db = None
+
+    def identify(
+        self,
+        frame_bgr: NDArray[np.uint8],
+        targets: list[HeadTrackerTarget],
+    ) -> list[IdentifiedTarget]:
+        """Return unnamed, non-rememberable targets for detector-only mode."""
+        return [
+            IdentifiedTarget(
+                target=target,
+                name=None,
+                similarity=0.0,
+                embedding=None,
+                can_remember=False,
+            )
+            for target in targets
+        ]
+
+    def observe(
+        self,
+        frame_bgr: NDArray[np.uint8],
+        targets: list[HeadTrackerTarget],
+    ) -> list[FaceObservation]:
+        """Return one anonymous observation for every detector target."""
+        return [FaceObservation(target=target, name=None, similarity=0.0, embedding=None) for target in targets]
+
+
 class FaceIdentityService:
     """Synchronous face-identity service used before the background worker is started."""
 
-    def __init__(self, identifier: FaceIdentifier):
+    def __init__(self, identifier: FaceIdentifier | DetectionOnlyFaceIdentifier):
         """Initialize the service."""
         self.identifier = identifier
 
@@ -130,6 +164,11 @@ def build_default_face_identity_service() -> FaceIdentityService:
     db = FaceDB()
     recognizer = FaceRecognizer()
     return FaceIdentityService(FaceIdentifier(recognizer=recognizer, db=db))
+
+
+def build_detection_only_face_identity_service() -> FaceIdentityService:
+    """Build a fallback service that tracks faces without recognizing identities."""
+    return FaceIdentityService(DetectionOnlyFaceIdentifier())
 
 
 def get_head_targets_from_camera(camera_worker: Any, frame_bgr: NDArray[np.uint8]) -> list[HeadTrackerTarget]:

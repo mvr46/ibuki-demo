@@ -30,6 +30,7 @@ class _FakeIdentityWorker:
     def __init__(self, identified: list[IdentifiedTarget]) -> None:
         self.identified = identified
         self.identifier = SimpleNamespace(db=_FakeDB())
+        self.recognition_available = True
 
     def identify(self, frame: np.ndarray, targets: list[HeadTrackerTarget]) -> list[IdentifiedTarget]:
         assert targets
@@ -167,3 +168,15 @@ def test_face_tools_only_active_when_identity_worker_is_wired() -> None:
     assert "who_is_here" in active_names
     assert "remember_person" in active_names
     assert "look_at_person" in active_names
+
+
+def test_detection_only_face_worker_keeps_who_is_here_but_hides_identity_tools() -> None:
+    """Detection-only fallback can report visible boxes but cannot remember or target names."""
+    identity_worker = _FakeIdentityWorker([])
+    identity_worker.recognition_available = False
+
+    active_names = {spec["name"] for spec in get_active_tool_specs(_deps(identity_worker))}
+
+    assert "who_is_here" in active_names
+    assert "remember_person" not in active_names
+    assert "look_at_person" not in active_names

@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import logging
 import threading
-from typing import Literal, Sequence
+from typing import Any, Literal, Sequence
 from collections import deque
 from dataclasses import field, dataclass
 
@@ -13,7 +13,6 @@ from numpy.typing import NDArray
 
 from reachy_mini_conversation_app.config import config
 from reachy_mini_conversation_app.vision.face_identity import (
-    FaceIdentifier,
     FaceObservation,
     IdentifiedTarget,
     target_to_bbox_xyxy,
@@ -101,7 +100,7 @@ class FaceIdentifierWorker:
     def __init__(
         self,
         camera_worker: object,
-        identifier: FaceIdentifier,
+        identifier: Any,
         *,
         rate_hz: float = 2.5,
         camera_horizontal_fov_deg: float | None = None,
@@ -111,10 +110,13 @@ class FaceIdentifierWorker:
         confirmation_observations: int = DEFAULT_CONFIRMATION_OBSERVATIONS,
         missing_hold_seconds: float = DEFAULT_MISSING_HOLD_SECONDS,
         name_confirmation_observations: int = DEFAULT_NAME_CONFIRMATION_OBSERVATIONS,
+        require_embedding_to_confirm: bool = True,
     ) -> None:
         """Initialize the worker."""
         self.camera_worker = camera_worker
         self.identifier = identifier
+        self.recognition_available = bool(getattr(identifier, "recognition_available", True))
+        self.require_embedding_to_confirm = bool(require_embedding_to_confirm)
         self.rate_hz = max(0.1, float(rate_hz))
         self.camera_horizontal_fov_deg = (
             float(camera_horizontal_fov_deg)
@@ -412,7 +414,7 @@ class FaceIdentifierWorker:
         """Return whether a candidate track is stable enough to expose."""
         if track.observations < self.confirmation_observations:
             return False
-        return track.embedding is not None
+        return not self.require_embedding_to_confirm or track.embedding is not None
 
     def _confirm_track(self, track: _StableFaceTrack) -> None:
         """Expose a track and seed its best initial identity guess."""

@@ -303,16 +303,33 @@ def run(
     if camera_worker is not None and getattr(camera_worker, "head_tracker", None) is not None:
         try:
             from reachy_mini_conversation_app.face_identity_worker import FaceIdentifierWorker
-            from reachy_mini_conversation_app.vision.face_identity import build_default_face_identity_service
+            from reachy_mini_conversation_app.vision.face_identity import (
+                build_default_face_identity_service,
+                build_detection_only_face_identity_service,
+            )
 
-            face_identity_service = build_default_face_identity_service()
-            face_identity_worker = FaceIdentifierWorker(camera_worker, face_identity_service.identifier)
+            try:
+                face_identity_service = build_default_face_identity_service()
+                require_embedding_to_confirm = True
+                logger.info("Face recognition worker initialized")
+            except Exception as e:
+                logger.warning("Face recognition unavailable: %s", e)
+                logger.warning("Falling back to detection-only face boxes; naming faces requires InsightFace models.")
+                face_identity_service = build_detection_only_face_identity_service()
+                require_embedding_to_confirm = False
+
+            face_identity_worker = FaceIdentifierWorker(
+                camera_worker,
+                face_identity_service.identifier,
+                require_embedding_to_confirm=require_embedding_to_confirm,
+            )
             set_face_identity_worker = getattr(camera_worker, "set_face_identity_worker", None)
             if callable(set_face_identity_worker):
                 set_face_identity_worker(face_identity_worker)
-            logger.info("Face recognition worker initialized")
+            if not require_embedding_to_confirm:
+                logger.info("Face detection-only worker initialized")
         except Exception as e:
-            logger.warning("Face recognition worker unavailable: %s", e)
+            logger.warning("Face identity worker unavailable: %s", e)
 
     speaker_attribution_worker = SpeakerAttributionWorker(
         spatial_audio_source=spatial_audio_source,

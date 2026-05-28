@@ -92,11 +92,16 @@ def initialize_camera_and_vision(
             try:
                 if args.head_tracker == "yolo":
                     from reachy_mini_conversation_app.vision.head_tracking.yolo_process import (
+                        PROCESS_START_TIMEOUT,
                         YoloHeadTrackerProcess,
                     )
 
+                    logging.getLogger(__name__).info(
+                        "Starting yolo head tracker subprocess. First run can take up to %.0fs while the model loads.",
+                        PROCESS_START_TIMEOUT,
+                    )
                     head_tracker = YoloHeadTrackerProcess()
-                    logging.getLogger(__name__).info("Using yolo head tracker subprocess")
+                    logging.getLogger(__name__).info("Yolo head tracker subprocess ready")
                 else:
                     from reachy_mini_conversation_app.vision.head_tracking.mediapipe import (
                         MediapipeHeadTracker,

@@ -175,6 +175,36 @@ def test_head_tracker_accepts_numpy_floating_roll_values(
         tracker.close()
 
 
+def test_head_tracker_startup_timeout_is_configurable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slow first-run tracker startup should be controlled by the startup timeout."""
+    _patch_fake_worker(
+        monkeypatch,
+        tmp_path,
+        """
+        time.sleep(0.05)
+        _send_message(("ready", None))
+
+        while True:
+            try:
+                message = _receive_message()
+            except EOFError:
+                raise SystemExit(0)
+
+            if message[0] == "close":
+                raise SystemExit(0)
+        """,
+    )
+
+    with pytest.raises(TimeoutError, match="yolo head tracker timed out after 0.01s"):
+        YoloHeadTrackerProcess(startup_timeout=0.01)
+
+    tracker = YoloHeadTrackerProcess(startup_timeout=0.2)
+    tracker.close()
+
+
 def test_head_tracker_targets_skip_new_frame_until_timed_out_reply_is_drained(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

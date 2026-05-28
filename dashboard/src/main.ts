@@ -19,6 +19,8 @@ type BackendStatus = {
   can_proceed_with_gemini?: boolean;
   can_proceed_with_hf?: boolean;
   requires_restart?: boolean;
+  backend_unavailable?: boolean;
+  backend_unavailable_reason?: string;
 };
 
 type DashboardStatus = BackendStatus & {
@@ -29,6 +31,7 @@ type DashboardStatus = BackendStatus & {
   };
   face_recognition: {
     available: boolean;
+    recognition_available?: boolean;
     db_path: string | null;
     visible_count: number;
     people: Array<{ name: string; exemplar_count: number }>;
@@ -56,6 +59,7 @@ type FaceBox = {
 type FaceState = {
   ok: boolean;
   available: boolean;
+  recognition_available?: boolean;
   focus_name: string | null;
   faces: FaceBox[];
 };
@@ -80,6 +84,8 @@ type ProcessStatus = {
   exitCode: number | null;
   signal: string | null;
   backendTarget: string;
+  backendReady?: boolean;
+  failureHint?: string | null;
 };
 
 type PersonalityList = {
@@ -112,6 +118,8 @@ const state = {
   process: null as ProcessStatus | null,
   processAvailable: false,
   faces: [] as FaceBox[],
+  faceStateAvailable: false,
+  faceRecognitionAvailable: false,
   selectedFaceId: null as number | null,
   logs: [] as LogEntry[],
 };
@@ -222,6 +230,7 @@ function renderStatus(): void {
   const status = state.status;
   const cameraOk = !!status?.camera.available && !!status.camera.frame_available;
   const faceOk = !!status?.face_recognition.available;
+  const backendUnavailable = !!status?.backend_unavailable;
   const backendOk = backendReady(status);
 
   elements.cameraState.textContent = !status
@@ -238,10 +247,12 @@ function renderStatus(): void {
       : "unavailable";
   elements.backendState.textContent = !status
     ? "checking"
+    : backendUnavailable
+      ? "app offline"
     : `${status.backend_provider || DEFAULT_BACKEND}${status.requires_restart ? " pending" : ""}`;
   setDot(elements.cameraDot, cameraOk ? "ok" : status?.camera.available ? "warn" : "err");
   setDot(elements.faceDot, faceOk ? "ok" : "warn");
-  setDot(elements.backendDot, backendOk ? "ok" : "warn");
+  setDot(elements.backendDot, backendUnavailable ? "warn" : backendOk ? "ok" : "warn");
 
   renderPeople();
   renderBackendControls();
@@ -262,10 +273,13 @@ function renderProcessControls(): void {
   elements.stopCommand.disabled = !status.running;
   if (status.running) {
     elements.processState.textContent = status.pid ? `running ${status.pid}` : "running";
-    setDot(elements.processDot, "ok");
+    setDot(elements.processDot, status.backendReady === false ? "warn" : "ok");
+  } else if (status.failureHint) {
+    elements.processState.textContent = "robot unavailable";
+    setDot(elements.processDot, "err");
   } else if (status.exitCode !== null || status.signal) {
     elements.processState.textContent = status.signal ? `stopped ${status.signal}` : `exit ${status.exitCode}`;
-    setDot(elements.processDot, status.exitCode === 0 ? "idle" : "warn");
+    setDot(elements.processDot, status.exitCode === 0 ? "idle" : "err");
   } else {
     elements.processState.textContent = "idle";
     setDot(elements.processDot, "idle");
@@ -274,8 +288,16 @@ function renderProcessControls(): void {
   const target = status.backendTarget.replace(/^https?:\/\//, "");
   setStatus(
     elements.commandStatus,
-    status.running ? `Running. Dashboard APIs proxy to ${target}.` : `Ready. Dashboard APIs proxy to ${target}.`,
-    status.running ? "ok" : "",
+    status.running
+      ? status.backendReady === false
+        ? `Starting. Waiting for app API on ${target}.`
+        : `Running. Dashboard APIs proxy to ${target}.`
+      : status.failureHint
+        ? status.failureHint
+        : status.exitCode !== null || status.signal
+          ? `Stopped. Dashboard APIs proxy to ${target}.`
+          : `Ready. Dashboard APIs proxy to ${target}.`,
+    status.running ? (status.backendReady === false ? "warn" : "ok") : status.failureHint ? "error" : "",
   );
 }
 
@@ -321,6 +343,8 @@ async function loadProcessStatus(): Promise<boolean> {
 
 async function loadFaceState(): Promise<void> {
   const data = await fetchJson<FaceState>("/api/face/state");
+  state.faceStateAvailable = !!data.available;
+  state.faceRecognitionAvailable = data.recognition_available !== false;
   state.faces = data.faces || [];
   if (state.selectedFaceId !== null && !state.faces.some((face) => face.id === state.selectedFaceId)) {
     state.selectedFaceId = null;
@@ -349,6 +373,7 @@ async function startProcess(): Promise<void> {
     });
     state.processAvailable = true;
     renderProcessControls();
+    addLocalLog(`Started ${command}`, "INFO", "PROCESS");
   } catch (error) {
     setStatus(elements.commandStatus, error instanceof Error ? error.message : "Failed to start.", "error");
     elements.startCommand.disabled = false;
@@ -371,9 +396,14 @@ async function stopProcess(): Promise<void> {
 function renderFaces(): void {
   const selected = selectedFace();
   elements.saveFace.disabled = !selected || selected.id === null || selected.can_remember === false;
+  const faceWord = state.faces.length === 1 ? "face" : "faces";
   elements.cameraHelp.textContent = state.faces.length
-    ? `${state.faces.length} face${state.faces.length === 1 ? "" : "s"} visible. Click a box to name it.`
-    : "No faces detected.";
+    ? state.faceRecognitionAvailable
+      ? `${state.faces.length} ${faceWord} visible. Click a box to name it.`
+      : `${state.faces.length} ${faceWord} visible. Face naming unavailable.`
+    : state.faceStateAvailable
+      ? "No faces detected."
+      : "Camera unavailable until the app API is ready.";
   elements.selectedFace.textContent = selected
     ? `${selected.label} - x ${selected.x_offset.toFixed(2)} - confidence ${selected.confidence.toFixed(2)}`
     : "Select a face in the camera feed.";
@@ -808,7 +838,8 @@ function connectLogs(): void {
   });
   source.onerror = () => {
     const now = Date.now();
-    if (!dashboardLogDisconnectedAt || now - dashboardLogDisconnectedAt > 8000) {
+    const waitingForAppApi = state.status?.backend_unavailable || state.process?.backendReady === false;
+    if (!waitingForAppApi && (!dashboardLogDisconnectedAt || now - dashboardLogDisconnectedAt > 8000)) {
       dashboardLogDisconnectedAt = now;
       addLocalLog("Dashboard event stream disconnected; retrying", "WARNING");
     }
