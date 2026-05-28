@@ -112,6 +112,16 @@
                 <div class="field">
                   <input id="command-input" type="text" autocomplete="off" spellcheck="false" />
                 </div>
+                <div class="command-grid">
+                  <div class="field">
+                    <label for="robot-host" class="field-label">Robot host</label>
+                    <input id="robot-host" type="text" placeholder="192.168.1.42" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="field">
+                    <label for="robot-port" class="field-label">Port</label>
+                    <input id="robot-port" type="number" min="1" max="65535" placeholder="8000" />
+                  </div>
+                </div>
                 <div class="button-row">
                   <button type="button" id="start-command" class="btn btn-primary">Start</button>
                   <button type="button" id="stop-command" class="btn btn-secondary">Stop</button>

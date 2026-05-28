@@ -40,9 +40,40 @@ const gstreamerPluginScanner = path.resolve(
   "libexec/gstreamer-1.0/gst-plugin-scanner",
 );
 const backendTarget = process.env.DASHBOARD_BACKEND_URL || "http://127.0.0.1:7860";
-const defaultCommand =
-  process.env.DASHBOARD_DEFAULT_COMMAND ||
-  "uv run python -m reachy_mini_conversation_app.main --head-tracker yolo";
+const defaultRobotHost = process.env.DASHBOARD_ROBOT_HOST || "";
+const defaultRobotPort = process.env.DASHBOARD_ROBOT_PORT || "";
+const defaultRobotName = process.env.DASHBOARD_ROBOT_NAME || "";
+const defaultHeadTracker = process.env.DASHBOARD_HEAD_TRACKER || "yolo";
+const defaultMediaBackend = process.env.DASHBOARD_MEDIA_BACKEND || "";
+
+function quoteCommandArg(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function buildDefaultCommand(): string {
+  const parts = [
+    "uv",
+    "run",
+    "python",
+    "-m",
+    "reachy_mini_conversation_app.main",
+    "--connection-mode",
+    "network",
+  ];
+
+  if (defaultHeadTracker && defaultHeadTracker.toLowerCase() !== "none") {
+    parts.push("--head-tracker", defaultHeadTracker);
+  }
+  if (defaultMediaBackend) parts.push("--media-backend", defaultMediaBackend);
+  if (defaultRobotHost) parts.push("--robot-host", defaultRobotHost);
+  if (defaultRobotPort) parts.push("--robot-port", defaultRobotPort);
+  if (defaultRobotName) parts.push("--robot-name", defaultRobotName);
+
+  return parts.map(quoteCommandArg).join(" ");
+}
+
+const defaultCommand = process.env.DASHBOARD_DEFAULT_COMMAND || buildDefaultCommand();
 const backendProbeTimeoutMs = 250;
 const backendReadyPollMs = 500;
 const backendReadyPollAttempts = 120;
@@ -252,6 +283,10 @@ function dashboardProcessPlugin(): Plugin {
       pid: isRunning() ? child?.pid || null : null,
       command: runningCommand,
       defaultCommand,
+      defaultRobotHost,
+      defaultRobotPort,
+      defaultRobotName,
+      defaultHeadTracker,
       startedAt,
       exitedAt,
       exitCode,

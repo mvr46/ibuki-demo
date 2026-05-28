@@ -79,6 +79,10 @@ type ProcessStatus = {
   pid: number | null;
   command: string;
   defaultCommand: string;
+  defaultRobotHost: string;
+  defaultRobotPort: string;
+  defaultRobotName: string;
+  defaultHeadTracker: string;
   startedAt: string | null;
   exitedAt: string | null;
   exitCode: number | null;
@@ -145,6 +149,8 @@ const elements = {
   processPill: byId("process-pill"),
   processSection: byId("process-section"),
   commandInput: byId<HTMLInputElement>("command-input"),
+  robotHost: byId<HTMLInputElement>("robot-host"),
+  robotPort: byId<HTMLInputElement>("robot-port"),
   startCommand: byId<HTMLButtonElement>("start-command"),
   stopCommand: byId<HTMLButtonElement>("stop-command"),
   commandStatus: byId("command-status"),
@@ -268,6 +274,12 @@ function renderProcessControls(): void {
   if (!elements.commandInput.value.trim()) {
     elements.commandInput.value = status.command || status.defaultCommand;
   }
+  if (!elements.robotHost.value.trim()) {
+    elements.robotHost.value = storedRobotHost() || status.defaultRobotHost || "";
+  }
+  if (!elements.robotPort.value.trim()) {
+    elements.robotPort.value = storedRobotPort() || status.defaultRobotPort || "";
+  }
 
   elements.startCommand.disabled = status.running;
   elements.stopCommand.disabled = !status.running;
@@ -358,11 +370,13 @@ function refreshFrame(): void {
 }
 
 async function startProcess(): Promise<void> {
-  const command = elements.commandInput.value.trim() || state.process?.defaultCommand || "";
-  if (!command) {
+  const baseCommand = elements.commandInput.value.trim() || state.process?.defaultCommand || "";
+  if (!baseCommand) {
     setStatus(elements.commandStatus, "Enter a command.", "warn");
     return;
   }
+  const command = commandWithRobotTarget(baseCommand);
+  if (!command) return;
   elements.startCommand.disabled = true;
   setStatus(elements.commandStatus, "Starting...");
   try {
@@ -377,6 +391,119 @@ async function startProcess(): Promise<void> {
   } catch (error) {
     setStatus(elements.commandStatus, error instanceof Error ? error.message : "Failed to start.", "error");
     elements.startCommand.disabled = false;
+  }
+}
+
+const ROBOT_HOST_STORAGE_KEY = "reachy-dashboard.robot-host";
+const ROBOT_PORT_STORAGE_KEY = "reachy-dashboard.robot-port";
+const ROBOT_TARGET_OPTIONS = new Set(["--connection-mode", "--robot-host", "--robot-port"]);
+
+function storedRobotHost(): string {
+  return window.localStorage.getItem(ROBOT_HOST_STORAGE_KEY) || "";
+}
+
+function storedRobotPort(): string {
+  return window.localStorage.getItem(ROBOT_PORT_STORAGE_KEY) || "";
+}
+
+function persistRobotTarget(): void {
+  window.localStorage.setItem(ROBOT_HOST_STORAGE_KEY, elements.robotHost.value.trim());
+  window.localStorage.setItem(ROBOT_PORT_STORAGE_KEY, elements.robotPort.value.trim());
+}
+
+function quoteCommandArg(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function splitCommand(commandText: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  for (const char of commandText.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if ("|&;<>".includes(char)) throw new Error("shell_operators_not_supported");
+    current += char;
+  }
+
+  if (escaped) current += "\\";
+  if (quote) throw new Error("unterminated_quote");
+  if (current) parts.push(current);
+  return parts;
+}
+
+function withoutRobotTargetArgs(parts: string[]): string[] {
+  const cleaned: string[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    if (ROBOT_TARGET_OPTIONS.has(part)) {
+      index += 1;
+      continue;
+    }
+    if (Array.from(ROBOT_TARGET_OPTIONS).some((option) => part.startsWith(`${option}=`))) continue;
+    cleaned.push(part);
+  }
+  return cleaned;
+}
+
+function commandParseErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return "Invalid command.";
+  if (error.message === "unterminated_quote") return "Fix command quoting before starting.";
+  if (error.message === "shell_operators_not_supported") return "Shell operators are not supported in the command.";
+  return "Invalid command.";
+}
+
+function commandWithRobotTarget(command: string): string {
+  const robotHost = elements.robotHost.value.trim();
+  const robotPort = elements.robotPort.value.trim();
+  persistRobotTarget();
+
+  if (!robotHost && !robotPort) return command;
+
+  const additions = ["--connection-mode", "network"];
+  if (robotHost) additions.push("--robot-host", robotHost);
+  if (robotPort) {
+    const parsedPort = Number.parseInt(robotPort, 10);
+    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      setStatus(elements.commandStatus, "Enter a valid robot port.", "warn");
+      return "";
+    }
+    additions.push("--robot-port", String(parsedPort));
+  }
+
+  try {
+    const baseParts = withoutRobotTargetArgs(splitCommand(command));
+    if (!baseParts.length) return "";
+    return [...baseParts, ...additions].map(quoteCommandArg).join(" ");
+  } catch (error) {
+    setStatus(elements.commandStatus, commandParseErrorMessage(error), "warn");
+    return "";
   }
 }
 
@@ -868,6 +995,8 @@ function wireEvents(): void {
   });
   elements.startCommand.addEventListener("click", () => void startProcess());
   elements.stopCommand.addEventListener("click", () => void stopProcess());
+  elements.robotHost.addEventListener("input", persistRobotTarget);
+  elements.robotPort.addEventListener("input", persistRobotTarget);
   elements.refreshFaceState.addEventListener("click", () => void loadFaceState());
   elements.saveFace.addEventListener("click", () => void saveSelectedFace());
   elements.saveBackend.addEventListener("click", () => void saveBackend());

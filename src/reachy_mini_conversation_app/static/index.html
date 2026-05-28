@@ -6,8 +6,8 @@
     <title>Reachy Mini</title>
     <link rel="preconnect" href="https://rsms.me/" />
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
-    <script type="module" crossorigin src="/static/assets/index-s1YMCFfL.js"></script>
-    <link rel="stylesheet" crossorigin href="/static/assets/index-Bn-2b8p8.css">
+    <script type="module" crossorigin src="/static/assets/index-D7gf60o6.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/assets/index-sV0bbOTL.css">
   </head>
   <body>
     <main id="app">
@@ -113,6 +113,16 @@
                 <div class="settings-section-title">App command</div>
                 <div class="field">
                   <input id="command-input" type="text" autocomplete="off" spellcheck="false" />
+                </div>
+                <div class="command-grid">
+                  <div class="field">
+                    <label for="robot-host" class="field-label">Robot host</label>
+                    <input id="robot-host" type="text" placeholder="192.168.1.42" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="field">
+                    <label for="robot-port" class="field-label">Port</label>
+                    <input id="robot-port" type="number" min="1" max="65535" placeholder="8000" />
+                  </div>
                 </div>
                 <div class="button-row">
                   <button type="button" id="start-command" class="btn btn-primary">Start</button>
