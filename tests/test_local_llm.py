@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from reachy_mini_conversation_app.local_llm import (
     OllamaLLMAdapter,
+    OllamaToolRouter,
     ollama_tool_schemas,
     ollama_tool_call_messages,
 )
@@ -90,6 +91,8 @@ def test_ollama_llm_posts_wrapped_tools_and_normalizes_response() -> None:
 
     assert captured["url"] == "http://ollama.test/api/chat"
     assert captured["timeout"] == 9
+    assert captured["payload"]["think"] is False
+    assert captured["payload"]["options"]["num_predict"] == 192
     assert captured["payload"]["tools"][0]["function"]["name"] == "dance"
     assert response.tool_calls == [{"name": "dance", "arguments": {"style": "wave"}}]
 
@@ -97,6 +100,7 @@ def test_ollama_llm_posts_wrapped_tools_and_normalizes_response() -> None:
 def test_ollama_llm_retries_without_tools_when_schema_is_rejected() -> None:
     """Tool schema rejection should not prevent a spoken local response."""
     payloads = []
+    diagnostics = {}
 
     class TextResponse:
         def __enter__(self) -> "TextResponse":
@@ -115,7 +119,11 @@ def test_ollama_llm_retries_without_tools_when_schema_is_rejected() -> None:
             raise HTTPError(req.full_url, 400, "Bad Request", {}, BytesIO(b"invalid tools"))
         return TextResponse()
 
-    adapter = OllamaLLMAdapter(base_url="http://ollama.test", model="gemma3:test")
+    adapter = OllamaLLMAdapter(
+        base_url="http://ollama.test",
+        model="gemma3:test",
+        diagnostics=type("Diagnostics", (), {"set_local_model": lambda self, **payload: diagnostics.update(payload)})(),
+    )
     with patch("reachy_mini_conversation_app.local_llm.urlopen", fake_urlopen):
         response = adapter._chat_sync(
             [{"role": "user", "content": "say hi"}],
@@ -125,3 +133,58 @@ def test_ollama_llm_retries_without_tools_when_schema_is_rejected() -> None:
     assert response.content == "hello"
     assert "tools" in payloads[0]
     assert "tools" not in payloads[1]
+    assert diagnostics["configured_model"] == "gemma3:test"
+    assert diagnostics["tools_disabled_by_model"] is True
+    assert diagnostics["last_tool_status"] == "rejected"
+
+
+def test_ollama_tool_router_posts_compact_structured_payload() -> None:
+    """Qwen router should use a compact JSON payload and normalize one tool call."""
+    captured = {}
+
+    class RouterResponse:
+        def __enter__(self) -> "RouterResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {"tool_calls": [{"name": "look_at_person", "arguments": {"name": "Matt"}}]}
+                        )
+                    }
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(req: object, timeout: float) -> RouterResponse:
+        captured["url"] = req.full_url
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return RouterResponse()
+
+    router = OllamaToolRouter(base_url="http://ollama.test", model="qwen3.5:test", timeout_seconds=3)
+    with patch("reachy_mini_conversation_app.local_llm.urlopen", fake_urlopen):
+        result = router._route_sync(
+            "look at Matt",
+            [
+                {
+                    "type": "function",
+                    "name": "look_at_person",
+                    "description": "Turn toward a named visible person.",
+                    "parameters": {"type": "object", "properties": {"name": {"type": "string"}}},
+                }
+            ],
+        )
+
+    assert captured["url"] == "http://ollama.test/api/chat"
+    assert captured["timeout"] == 3
+    assert captured["payload"]["model"] == "qwen3.5:test"
+    assert captured["payload"]["think"] is False
+    assert captured["payload"]["options"]["num_predict"] <= 64
+    assert captured["payload"]["format"]["required"] == ["tool_calls"]
+    assert "available_tools" in captured["payload"]["messages"][1]["content"]
+    assert result.tool_calls == [{"name": "look_at_person", "arguments": {"name": "Matt"}}]

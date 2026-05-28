@@ -57,11 +57,13 @@ class OllamaVisionAnalyzer:
         base_url: str | None = None,
         model: str | None = None,
         timeout_seconds: float = 60.0,
+        diagnostics: Any | None = None,
     ) -> None:
         """Initialize the Ollama target."""
         self.base_url = (base_url or config.OLLAMA_BASE_URL).rstrip("/")
         self.model = model or config.OLLAMA_MODEL
         self.timeout_seconds = timeout_seconds
+        self.diagnostics = diagnostics
 
     async def analyze(self, frame: NDArray[np.uint8], question: str) -> dict[str, Any]:
         """Analyze a frame using Ollama."""
@@ -69,7 +71,19 @@ class OllamaVisionAnalyzer:
             answer = await asyncio.to_thread(self._analyze_sync, frame, question)
         except Exception as exc:
             logger.warning("Ollama vision analysis failed: %s", exc)
+            _record_local_model(
+                self.diagnostics,
+                configured_model=self.model,
+                last_vision_status="error",
+                last_ollama_error=str(exc),
+            )
             return {"error": f"Ollama vision analysis failed: {exc}"}
+        _record_local_model(
+            self.diagnostics,
+            configured_model=self.model,
+            last_vision_status="ok",
+            last_ollama_error=None,
+        )
         return {"image_description": answer}
 
     def _analyze_sync(self, frame: NDArray[np.uint8], question: str) -> str:
@@ -77,6 +91,11 @@ class OllamaVisionAnalyzer:
         payload = {
             "model": self.model,
             "stream": False,
+            "think": False,
+            "options": {
+                "num_predict": 128,
+                "temperature": 0.2,
+            },
             "messages": [
                 {
                     "role": "user",
@@ -101,9 +120,18 @@ class OllamaVisionAnalyzer:
         return str(content or "").strip() or "I can't tell from this image."
 
 
-def build_default_vision_analyzer(vision_processor: Any | None = None) -> VisionAnalyzer:
+def build_default_vision_analyzer(
+    vision_processor: Any | None = None,
+    diagnostics: Any | None = None,
+) -> VisionAnalyzer:
     """Return the preferred local-first vision analyzer."""
     if vision_processor is not None:
         return SmolVLMVisionAnalyzer(vision_processor)
-    return OllamaVisionAnalyzer()
+    return OllamaVisionAnalyzer(diagnostics=diagnostics)
 
+
+def _record_local_model(diagnostics: Any | None, **payload: object) -> None:
+    """Best-effort local model diagnostics update."""
+    set_local_model = getattr(diagnostics, "set_local_model", None)
+    if callable(set_local_model):
+        set_local_model(**payload)

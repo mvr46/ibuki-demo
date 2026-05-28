@@ -12,6 +12,7 @@ file when available.
 
 import os
 import sys
+import json
 import time
 import asyncio
 import logging
@@ -47,6 +48,7 @@ from reachy_mini_conversation_app.config import (
     refresh_runtime_config_from_env,
 )
 from reachy_mini_conversation_app.dashboard import DashboardLogBuffer, mount_dashboard_routes
+from reachy_mini_conversation_app.local_tts import piper_tts_status
 from reachy_mini_conversation_app.transport import probe_host, measure_http_rtt_ms
 from reachy_mini_conversation_app.startup_settings import read_startup_settings, write_startup_settings
 from reachy_mini_conversation_app.audio.startup_config import apply_audio_startup_config
@@ -105,13 +107,45 @@ def _estimate_pending_playback_seconds(robot: ReachyMini) -> float:
 def _fetch_json_dict(url: str, *, timeout: float) -> dict[str, object]:
     """Fetch a JSON object from a robot health endpoint."""
     try:
-        import json
-
         with urlopen(url, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, URLError, TimeoutError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _ollama_model_status(
+    base_url: str,
+    model: str,
+    *,
+    router_model: str | None = None,
+    timeout: float = 0.5,
+) -> dict[str, object]:
+    """Return whether the configured Ollama model is installed."""
+    selected_router_model = (router_model or "").strip()
+    status: dict[str, object] = {
+        "configured_model": model,
+        "router_model": selected_router_model or None,
+        "installed": False,
+        "router_installed": False,
+        "installed_models": [],
+    }
+    try:
+        with urlopen(f"{base_url.rstrip('/')}/api/tags", timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, TimeoutError, ValueError) as exc:
+        status["last_ollama_error"] = str(exc)
+        return status
+    models = payload.get("models") if isinstance(payload, dict) else None
+    names = [str(item.get("name")) for item in models if isinstance(item, dict) and item.get("name")] if isinstance(models, list) else []
+    status["installed_models"] = names
+    status["installed"] = model in names
+    status["router_installed"] = selected_router_model in names if selected_router_model else False
+    if model not in names:
+        status["last_ollama_error"] = f"Configured Ollama model {model!r} is not installed."
+    elif selected_router_model and selected_router_model not in names:
+        status["last_ollama_error"] = f"Configured Ollama router model {selected_router_model!r} is not installed."
+    return status
 
 
 class LocalStream:
@@ -190,7 +224,7 @@ class LocalStream:
     def _has_required_key(self, backend: str) -> bool:
         """Return whether the requested backend has its required credential."""
         if backend == LOCAL_BACKEND:
-            return True
+            return bool(piper_tts_status().get("ready"))
         if backend == GEMINI_BACKEND:
             return self._has_key(config.GEMINI_API_KEY)
         if backend == HF_BACKEND:
@@ -203,7 +237,7 @@ class LocalStream:
         if backend == GEMINI_BACKEND:
             return "GEMINI_API_KEY"
         if backend == LOCAL_BACKEND:
-            return "OLLAMA_BASE_URL"
+            return "PIPER_VOICE"
         if backend == HF_BACKEND:
             return HF_REALTIME_WS_URL_ENV
         return "OPENAI_API_KEY"
@@ -369,9 +403,11 @@ class LocalStream:
         daemon_rtt = measure_http_rtt_ms(f"{base_url}/api/daemon/status", timeout_seconds=0.5)
         daemon_status = _fetch_json_dict(f"{base_url}/api/daemon/status", timeout=0.5)
         media_status = _fetch_json_dict(f"{base_url}/api/media/status", timeout=0.5)
-        doa_status = _fetch_json_dict(f"{base_url}/api/state/doa", timeout=0.5)
         full_state = _fetch_json_dict(f"{base_url}/api/state/full", timeout=0.5)
         wired_link = probe_host("10.42.0.2", int(port), timeout_seconds=0.2)
+        ollama_base_url = getattr(config, "OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+        ollama_model = getattr(config, "OLLAMA_MODEL", get_model_name_for_backend(LOCAL_BACKEND))
+        ollama_router_model = getattr(config, "OLLAMA_ROUTER_MODEL", "qwen3.5:4b")
 
         set_daemon = getattr(diagnostics, "set_daemon", None)
         if callable(set_daemon):
@@ -385,11 +421,18 @@ class LocalStream:
                 {
                     "daemon_running": daemon_status.get("state") == "running",
                     "media_available": bool(media_status.get("available")) and not bool(media_status.get("released")),
-                    "doa_available": "angle" in doa_status or "speech_detected" in doa_status,
+                    "doa_status": "disabled/deprecated",
+                    "doa_available": False,
                     "full_state_available": "timestamp" in full_state or "head_pose" in full_state,
                     "wired_link_present": wired_link,
                 }
             )
+        set_local_model = getattr(diagnostics, "set_local_model", None)
+        if callable(set_local_model):
+            set_local_model(**_ollama_model_status(ollama_base_url, ollama_model, router_model=ollama_router_model))
+        set_local_tts = getattr(diagnostics, "set_local_tts", None)
+        if callable(set_local_tts):
+            set_local_tts(**piper_tts_status())
 
     def _init_settings_ui_if_needed(self) -> None:
         """Attach minimal settings UI to the settings app.
@@ -462,7 +505,8 @@ class LocalStream:
                 "can_proceed_with_hf": can_proceed_with_hf,
                 "can_proceed_with_local": can_proceed_with_local,
                 "ollama_base_url": getattr(config, "OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-                "ollama_model": getattr(config, "OLLAMA_MODEL", "gemma3:latest"),
+                "ollama_model": getattr(config, "OLLAMA_MODEL", get_model_name_for_backend(LOCAL_BACKEND)),
+                "ollama_router_model": getattr(config, "OLLAMA_ROUTER_MODEL", "qwen3.5:4b"),
                 "requires_restart": requires_restart,
             }
 

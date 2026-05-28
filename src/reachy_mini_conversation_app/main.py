@@ -322,9 +322,8 @@ def run(
         args.gradio = True
 
     from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
-    from reachy_mini_conversation_app.vision.head_tracking.speaker import build_daemon_spatial_audio_source
 
-    spatial_audio_source = build_daemon_spatial_audio_source(robot)
+    spatial_audio_source = None
 
     try:
         camera_worker, vision_processor = initialize_camera_and_vision(
@@ -397,7 +396,10 @@ def run(
     if config.BACKEND_PROVIDER == LOCAL_BACKEND:
         from reachy_mini_conversation_app.vision.analyzers import build_default_vision_analyzer
 
-        deps.vision_analyzer = build_default_vision_analyzer(vision_processor)
+        deps.vision_analyzer = build_default_vision_analyzer(
+            vision_processor,
+            diagnostics=diagnostics,
+        )
     current_file_path = os.path.dirname(os.path.abspath(__file__))
     logger.debug(f"Current file absolute path: {current_file_path}")
     chatbot = gr.Chatbot(
@@ -520,10 +522,6 @@ def run(
     head_wobbler.start()
     if camera_worker:
         camera_worker.start()
-    elif spatial_audio_source:
-        spatial_audio_start = getattr(spatial_audio_source, "start", None)
-        if callable(spatial_audio_start):
-            spatial_audio_start()
     if face_identity_worker:
         face_identity_worker.start()
 
@@ -552,10 +550,6 @@ def run(
             face_identity_worker.stop()
         if camera_worker:
             camera_worker.stop()
-        elif spatial_audio_source:
-            spatial_audio_stop = getattr(spatial_audio_source, "stop", None)
-            if callable(spatial_audio_stop):
-                spatial_audio_stop()
 
         # Ensure media is explicitly closed before disconnecting
         try:

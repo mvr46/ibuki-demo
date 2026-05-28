@@ -43,10 +43,11 @@ class PiperTTSAdapter:
         return await asyncio.to_thread(self._synthesize_sync, text)
 
     def _synthesize_sync(self, text: str) -> tuple[int, NDArray[np.int16]]:
-        piper_bin = shutil.which("piper")
-        if not piper_bin or not self.voice_model:
-            logger.warning("Piper TTS unavailable; falling back to macOS say.")
-            return self._synthesize_with_macos_say(text)
+        status = piper_tts_status(self.voice_model)
+        piper_bin = status.get("piper_bin")
+        if not status["ready"] or not isinstance(piper_bin, str):
+            logger.error("Piper TTS unavailable: %s", status.get("error") or "not_ready")
+            return self.output_sample_rate, np.zeros(0, dtype=np.int16)
 
         with tempfile.TemporaryDirectory(prefix="reachy-piper-") as tmp:
             out_path = Path(tmp) / "speech.wav"
@@ -72,48 +73,6 @@ class PiperTTSAdapter:
         self.output_sample_rate = int(sample_rate)
         return int(sample_rate), audio
 
-    def _synthesize_with_macos_say(self, text: str) -> tuple[int, NDArray[np.int16]]:
-        """Synthesize with macOS `say` when Piper is not configured."""
-        say_bin = shutil.which("say")
-        afconvert_bin = shutil.which("afconvert")
-        if not say_bin or not afconvert_bin:
-            logger.warning("No local TTS available; install piper or use macOS say.")
-            return self.output_sample_rate, np.zeros(0, dtype=np.int16)
-
-        with tempfile.TemporaryDirectory(prefix="reachy-say-") as tmp:
-            aiff_path = Path(tmp) / "speech.aiff"
-            wav_path = Path(tmp) / "speech.wav"
-            say_proc = subprocess.run(
-                [say_bin, "-o", str(aiff_path), text],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if say_proc.returncode != 0:
-                logger.warning("macOS say failed: %s", say_proc.stderr.strip() or say_proc.stdout.strip())
-                return self.output_sample_rate, np.zeros(0, dtype=np.int16)
-
-            convert_proc = subprocess.run(
-                [afconvert_bin, "-f", "WAVE", "-d", "LEI16@24000", str(aiff_path), str(wav_path)],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if convert_proc.returncode != 0:
-                logger.warning("afconvert failed: %s", convert_proc.stderr.strip() or convert_proc.stdout.strip())
-                return self.output_sample_rate, np.zeros(0, dtype=np.int16)
-            sample_rate, data = wavfile.read(wav_path)
-
-        audio = np.asarray(data)
-        if audio.ndim == 2:
-            audio = audio[:, 0]
-        if audio.dtype != np.int16:
-            if np.issubdtype(audio.dtype, np.floating):
-                audio = np.clip(audio, -1.0, 1.0) * 32767
-            audio = audio.astype(np.int16)
-        self.output_sample_rate = int(sample_rate)
-        return int(sample_rate), audio
-
 
 class NoopTTSAdapter:
     """Testing/null adapter that returns silence."""
@@ -123,3 +82,29 @@ class NoopTTSAdapter:
     async def synthesize(self, text: str) -> tuple[int, NDArray[np.int16]]:
         """Return empty audio."""
         return self.output_sample_rate, np.zeros(0, dtype=np.int16)
+
+
+def piper_tts_status(voice_model: str | None = None) -> dict[str, object]:
+    """Return strict local Piper readiness information."""
+    piper_bin = shutil.which("piper")
+    selected_voice = (voice_model or config.PIPER_VOICE or "").strip()
+    voice_path = Path(selected_voice).expanduser() if selected_voice else None
+    voice_exists = bool(voice_path and voice_path.is_file())
+    ready = bool(piper_bin and selected_voice and voice_exists)
+    error = None
+    if not piper_bin:
+        error = "missing_piper"
+    elif not selected_voice:
+        error = "missing_piper_voice"
+    elif not voice_exists:
+        error = "invalid_piper_voice"
+    return {
+        "provider": "piper",
+        "ready": ready,
+        "piper_available": bool(piper_bin),
+        "piper_bin": piper_bin,
+        "voice_configured": bool(selected_voice),
+        "voice_model": selected_voice or None,
+        "voice_exists": voice_exists,
+        "error": error,
+    }

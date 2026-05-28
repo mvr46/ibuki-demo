@@ -1,8 +1,7 @@
-"""Tests for CameraWorker spatial speaker tracking."""
+"""Tests for CameraWorker visual-only speaker tracking."""
 
 from __future__ import annotations
 import time
-import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,12 +10,13 @@ import pytest
 from reachy_mini_conversation_app.camera_worker import CameraWorker
 from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
-from reachy_mini_conversation_app.vision.head_tracking.speaker import SoundOrientationController, target_from_doa
+from reachy_mini_conversation_app.vision.head_tracking.speaker import target_from_doa
 
 
 class _FakeTracker:
     def __init__(self, targets: list[HeadTrackerTarget]) -> None:
         self.targets = targets
+        self.closed = False
 
     def get_head_targets(self, frame: np.ndarray) -> list[HeadTrackerTarget]:
         return self.targets
@@ -24,11 +24,22 @@ class _FakeTracker:
     def get_head_position(self, frame: np.ndarray) -> tuple[None, None]:
         return None, None
 
+    def close(self) -> None:
+        self.closed = True
+
 
 class _FakePoller:
     def __init__(self, target: object | None, target_at: float | None) -> None:
         self.target = target
         self.target_at = target_at
+        self.started = False
+        self.stopped = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
 
     def get_latest(self) -> tuple[object | None, float | None]:
         return self.target, self.target_at
@@ -58,253 +69,57 @@ def _target(x_offset: float, confidence: float) -> HeadTrackerTarget:
     )
 
 
-def test_camera_worker_selects_face_matching_fresh_spatial_audio() -> None:
-    """Camera worker should select the face whose x offset matches fresh DoA."""
+def test_camera_worker_does_not_auto_build_doa_poller() -> None:
+    """Runtime DoA polling should stay disabled even with a target-list tracker."""
+    worker = CameraWorker(_FakeRobot(), _FakeTracker([_target(0.0, 0.9)]))
+
+    assert worker.spatial_audio_source is None
+    assert worker._build_doa_poller() is None
+
+
+def test_camera_worker_ignores_explicit_doa_poller_for_visual_selection() -> None:
+    """Deprecated DoA inputs should not bias face selection or body yaw."""
     now = time.monotonic()
     robot = _FakeRobot()
+    poller = _FakePoller(target_from_doa(0.0, speech_detected=True), now)
     worker = CameraWorker(
         robot,
-        _FakeTracker([_target(-0.7, 0.95), _target(0.6, 0.70)]),
-        doa_poller=_FakePoller(target_from_doa(0.4 * np.pi / 2.0, speech_detected=True), now),
+        _FakeTracker([_target(-0.6, 0.95), _target(0.6, 0.40)]),
+        doa_poller=poller,
     )
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
     worker.notify_user_speech_started()
 
     worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
 
-    assert robot.look_at_calls
-    assert robot.look_at_calls[-1][0] > 320
-    assert worker.get_tracking_body_yaw_offset() == pytest.approx(0.0)
-
-
-def test_camera_worker_switches_visible_speaker_on_fresh_off_front_audio() -> None:
-    """Fresh off-front DoA should break continuity and switch to the audio-matched face."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(-0.45, 0.98), _target(0.45, 0.65)]),
-        doa_poller=_FakePoller(target_from_doa(0.55 * np.pi / 2.0, speech_detected=True), now),
-    )
-    worker._speaker_selection_state.last_x_offset = -0.45
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
-
-    assert robot.look_at_calls
-    assert robot.look_at_calls[-1][0] > 320
-    assert worker._speaker_selection_state.last_x_offset == pytest.approx(0.45)
-    assert worker.get_tracking_body_yaw_offset() == pytest.approx(0.0)
-
-
-def test_camera_worker_keeps_locked_face_when_sound_is_front() -> None:
-    """Front DoA should not pull focus away from the current visible speaker."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(-0.6, 0.8), _target(0.0, 0.8)]),
-        doa_poller=_FakePoller(target_from_doa(np.pi / 2.0, speech_detected=True), now),
-    )
-    worker._speaker_selection_state.last_x_offset = -0.6
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
-
+    assert worker.spatial_audio_source is None
     assert robot.look_at_calls
     assert robot.look_at_calls[-1][0] < 320
     assert worker.get_tracking_body_yaw_offset() == pytest.approx(0.0)
+    assert not poller.started
 
 
-def test_camera_worker_ignores_unmatched_face_during_off_front_audio_search() -> None:
-    """An off-camera speaker should make the robot search instead of staying on the old face."""
+def test_camera_worker_start_stop_does_not_start_doa_source() -> None:
+    """Camera lifecycle should not start or stop deprecated DoA pollers."""
     now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(-0.5, 0.95)]),
-        doa_poller=_FakePoller(target_from_doa(0.3 * np.pi / 2.0, speech_detected=True), now),
-    )
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
+    tracker = _FakeTracker([_target(0.0, 0.9)])
+    poller = _FakePoller(target_from_doa(np.pi, speech_detected=True), now)
+    worker = CameraWorker(_FakeRobot(), tracker, doa_poller=poller)
 
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
+    worker.start()
+    worker.stop()
 
-    assert robot.look_at_calls == []
-    assert worker.get_face_tracking_offsets() == pytest.approx((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-    assert worker.get_tracking_body_yaw_offset() > 0.0
-
-
-def test_camera_worker_searches_instead_of_relocking_center_face_for_side_audio() -> None:
-    """A locked centered face should not absorb a fresh side-speaker cue."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(0.0, 0.99)]),
-        doa_poller=_FakePoller(target_from_doa(0.45 * np.pi / 2.0, speech_detected=True), now),
-    )
-    worker._speaker_selection_state.last_x_offset = 0.0
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
-
-    assert robot.look_at_calls == []
-    assert worker.get_tracking_body_yaw_offset() > 0.0
-
-
-def test_camera_worker_logs_off_front_sound_debug(caplog: pytest.LogCaptureFixture) -> None:
-    """Off-front sound cues should be visible in debug logs."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(0.0, 0.99)]),
-        doa_poller=_FakePoller(target_from_doa(0.45 * np.pi / 2.0, speech_detected=True), now),
-    )
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-    caplog.set_level(logging.DEBUG, logger="reachy_mini_conversation_app.camera_worker")
-
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
-
-    debug_output = "\n".join(record.getMessage() for record in caplog.records)
-    assert "Spatial audio: sound not in front heard" in debug_output
-    assert "event=starting_search" in debug_output
-    assert "direction=right" in debug_output
-    assert "visible_faces=1" in debug_output
-
-
-def test_camera_worker_searches_left_for_left_side_audio() -> None:
-    """Left-side audio search should mirror the right-side body-yaw sign."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(0.5, 0.95)]),
-        doa_poller=_FakePoller(target_from_doa(0.7 * np.pi, speech_detected=True), now),
-    )
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
-
-    assert robot.look_at_calls == []
-    assert worker.get_tracking_body_yaw_offset() < 0.0
-
-
-def test_camera_worker_continues_audio_search_after_brief_sound() -> None:
-    """A short off-front cue should keep turning briefly without constant sound."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    poller = _FakePoller(target_from_doa(0.2 * np.pi / 2.0, speech_detected=True), now)
-    worker = CameraWorker(robot, _FakeTracker([]), doa_poller=poller)
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    worker._update_tracking_from_frame(frame, now)
-    first_yaw = worker.get_tracking_body_yaw_offset()
-    poller.target_at = now - 10.0
-    worker._update_tracking_from_frame(frame, now + 1.2)
-
-    assert first_yaw > 0.0
-    assert worker.get_tracking_body_yaw_offset() > first_yaw
-    assert robot.look_at_calls == []
-
-
-def test_camera_worker_keeps_searching_when_only_old_center_face_is_visible() -> None:
-    """A stale search should not reacquire a centered face from the previous lock."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    poller = _FakePoller(target_from_doa(0.2 * np.pi / 2.0, speech_detected=True), now)
-    worker = CameraWorker(robot, _FakeTracker([_target(0.0, 0.99)]), doa_poller=poller)
-    worker._speaker_selection_state.last_x_offset = 0.0
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    worker._update_tracking_from_frame(frame, now)
-    first_yaw = worker.get_tracking_body_yaw_offset()
-    poller.target_at = now - 10.0
-    worker._update_tracking_from_frame(frame, now + 0.5)
-
-    assert robot.look_at_calls == []
-    assert worker.get_face_tracking_offsets() == pytest.approx((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-    assert worker.get_tracking_body_yaw_offset() > first_yaw
-
-
-def test_camera_worker_locks_face_found_after_audio_search() -> None:
-    """A held sound search should accept a newly visible face in that direction."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    tracker = _FakeTracker([])
-    poller = _FakePoller(target_from_doa(0.2 * np.pi / 2.0, speech_detected=True), now)
-    worker = CameraWorker(robot, tracker, doa_poller=poller)
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    worker._update_tracking_from_frame(frame, now)
-    poller.target_at = now - 10.0
-    tracker.targets = [_target(0.25, 0.8)]
-    worker._update_tracking_from_frame(frame, now + 0.5)
-
-    assert robot.look_at_calls
-    assert robot.look_at_calls[-1][0] > 320.0
-    assert worker.get_tracking_body_yaw_offset() > 0.0
-
-
-def test_camera_worker_pauses_spatial_audio_while_assistant_speaks() -> None:
-    """Assistant audio should gate off DoA bias and body-yaw updates."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(-0.7, 0.95), _target(0.6, 0.70)]),
-        doa_poller=_FakePoller(target_from_doa(0.4 * np.pi / 2.0, speech_detected=True), now),
-    )
-    worker.notify_user_speech_started()
-    worker.notify_assistant_audio_started()
-
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
-
-    assert robot.look_at_calls
-    assert robot.look_at_calls[-1][0] < 320
-    assert worker.get_tracking_body_yaw_offset() == pytest.approx(0.0)
-
-
-def test_camera_worker_falls_back_to_visual_selection_without_doa() -> None:
-    """Visual confidence should drive tracking when DoA is unavailable."""
-    now = time.monotonic()
-    robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(-0.5, 0.9), _target(0.5, 0.4)]),
-        doa_poller=_FakePoller(None, None),
-    )
-
-    worker._update_tracking_from_frame(np.zeros((480, 640, 3), dtype=np.uint8), now)
-
-    assert robot.look_at_calls
-    assert robot.look_at_calls[-1][0] < 320
-    assert worker.get_tracking_body_yaw_offset() == pytest.approx(0.0)
+    assert not poller.started
+    assert not poller.stopped
+    assert tracker.closed
 
 
 def test_camera_worker_prefers_named_focus_from_identity_snapshot() -> None:
-    """Camera worker should bias speaker selection toward a requested visible name."""
+    """Visual-only selection should still bias toward a requested visible name."""
     now = time.monotonic()
     robot = _FakeRobot()
     unknown = _target(-0.5, 0.98)
     alice = _target(0.5, 0.55)
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([unknown, alice]),
-        doa_poller=_FakePoller(None, None),
-    )
+    worker = CameraWorker(robot, _FakeTracker([unknown, alice]))
     worker.set_speaker_focus_name("Alice")
     worker.set_face_identity_worker(
         SimpleNamespace(
@@ -329,16 +144,10 @@ def test_camera_worker_prefers_named_focus_from_identity_snapshot() -> None:
 
 
 def test_camera_worker_returns_head_and_body_offsets_to_neutral_after_loss() -> None:
-    """Lost speaker focus should interpolate head and body offsets to neutral."""
+    """Lost visual speaker focus should interpolate head and body offsets to neutral."""
     now = time.monotonic()
     robot = _FakeRobot()
-    worker = CameraWorker(
-        robot,
-        _FakeTracker([_target(0.6, 0.9)]),
-        doa_poller=_FakePoller(target_from_doa(0.4 * np.pi / 2.0, speech_detected=True), now),
-    )
-    worker._sound_controller = SoundOrientationController(stable_samples=1, smoothing=1.0)
-    worker.notify_user_speech_started()
+    worker = CameraWorker(robot, _FakeTracker([_target(0.6, 0.9)]))
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     worker._update_tracking_from_frame(frame, now)
 

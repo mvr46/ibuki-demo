@@ -32,7 +32,7 @@ Conversational app for the Reachy Mini robot combining realtime voice backends, 
 ## Overview
 - Real-time audio conversation loop with `fastrtc` for low-latency streaming. Supported backends:
   - **Hugging Face** - default, using the built-in Hugging Face server or your own local endpoint.
-  - **Local Mac** - local-first STT/LLM/TTS path using MLX Whisper, Ollama, and Piper when configured.
+  - **Local Mac** - local-first STT/LLM/TTS path using MLX Whisper, Ollama, and required Piper voice output.
   - **OpenAI Realtime** (`gpt-realtime-2`) - requires `OPENAI_API_KEY`.
   - **Gemini Live** (`gemini-3.1-flash-live-preview`) - requires `GEMINI_API_KEY`.
 - Vision processing uses the selected realtime backend by default (when the camera tool is used), with optional on-device local vision using SmolVLM2 (CPU/GPU/MPS) via `--local-vision`.
@@ -142,9 +142,10 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 | `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
 | `REACHY_MEDIA_HOST` | Optional media signaling override. Set to `10.42.0.2` for the direct Mac mini ↔ Reachy Mini wired link. |
 | `OLLAMA_BASE_URL` | Local Ollama URL for the `local` backend and Ollama vision, defaults to `http://127.0.0.1:11434`. |
-| `OLLAMA_MODEL` | Ollama model for local LLM/vision, defaults to `gemma3:latest`. |
+| `OLLAMA_MODEL` | Ollama model for local chat/vision, defaults to `gemma3:4b`. Run `ollama pull gemma3:4b` before using the optimized local backend. |
+| `OLLAMA_ROUTER_MODEL` | Compact Ollama model for local tool routing, defaults to `qwen3.5:4b`. Run `ollama pull qwen3.5:4b` for local robot tools. |
 | `LOCAL_STT_MODEL` | MLX Whisper model for local STT, defaults to `mlx-community/whisper-small-mlx`. |
-| `PIPER_VOICE` | Piper voice model path for local TTS. |
+| `PIPER_VOICE` | Required Piper `.onnx` voice model path for local TTS. The local backend will report an error instead of falling back to macOS `say` when this is missing. |
 
 ### Hugging Face Connection Modes
 
@@ -206,7 +207,7 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--head-tracker {yolo,mediapipe}` | `None` | Select a head-tracking backend when a camera is available. `yolo` uses local YOLO face detection with robot-side spatial-audio speaker focus when `/api/state/doa` is available, falling back to visual-only tracking. `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
+| `--head-tracker {yolo,mediapipe}` | `None` | Select a visual head-tracking backend when a camera is available. `yolo` uses local YOLO face detection; DoA/spatial-audio steering is deprecated and disabled. `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
 | `--media-backend {auto,default,local,webrtc,no_media}` | `auto` | Select the Reachy Mini SDK media backend. Use `no_media` for headless runs when camera/audio hardware is unavailable. In this app, `no_media` also disables camera, head tracking, and local vision. |
 | `--local-vision` | `False` | Use the local vision model (SmolVLM2) for camera-tool requests instead of the selected realtime backend. Requires `local_vision` extra to be installed. |
@@ -224,13 +225,15 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 # Run with MediaPipe head tracking
 reachy-mini-conversation-app --head-tracker mediapipe
 
-# Run with YOLO speaker focus: face tracking plus robot-side spatial audio when available
+# Run with YOLO visual face tracking
 reachy-mini-conversation-app --head-tracker yolo
 
 # Override the default robot host if reachy-mini.local is not the right target
 reachy-mini-conversation-app --robot-host <robot-ip-or-hostname> --head-tracker yolo
 
 # Optimized wired Mac mini setup
+ollama pull gemma3:4b
+ollama pull qwen3.5:4b
 BACKEND_PROVIDER=local reachy-mini-conversation-app --hardware-profile mac-mini-wired --head-tracker yolo
 
 # Run with local vision processing (requires local_vision extra)

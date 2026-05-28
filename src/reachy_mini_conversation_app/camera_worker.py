@@ -19,7 +19,6 @@ from reachy_mini_conversation_app.vision.head_tracking.speaker import (
     SpeakerSelectionState,
     SoundOrientationController,
     select_speaker,
-    build_daemon_spatial_audio_source,
 )
 
 
@@ -94,12 +93,9 @@ class CameraWorker:
         self._last_sound_debug_at = 0.0
         self._last_sound_debug_key: tuple[str, str] | None = None
         self._spatial_audio_source: SpatialAudioSource | None
-        if spatial_audio_source is not None:
-            self._spatial_audio_source = spatial_audio_source
-        elif doa_poller is not None:
-            self._spatial_audio_source = doa_poller
-        else:
-            self._spatial_audio_source = self._build_doa_poller()
+        if spatial_audio_source is not None or doa_poller is not None:
+            logger.info("Spatial audio/DoA speaker steering is deprecated and disabled.")
+        self._spatial_audio_source = None
 
         self._speech_state_lock = threading.Lock()
         self._user_speech_active = False
@@ -195,10 +191,6 @@ class CameraWorker:
     def start(self) -> None:
         """Start the camera worker loop in a thread."""
         self._stop_event.clear()
-        if self._spatial_audio_source is not None:
-            doa_start = getattr(self._spatial_audio_source, "start", None)
-            if callable(doa_start):
-                doa_start()
         self._thread = threading.Thread(target=self.working_loop, daemon=True)
         self._thread.start()
         logger.debug("Camera worker started")
@@ -208,10 +200,6 @@ class CameraWorker:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join()
-        if self._spatial_audio_source is not None:
-            doa_stop = getattr(self._spatial_audio_source, "stop", None)
-            if callable(doa_stop):
-                doa_stop()
         head_tracker_close = getattr(self.head_tracker, "close", None)
         if callable(head_tracker_close):
             head_tracker_close()
@@ -224,10 +212,8 @@ class CameraWorker:
         return self._spatial_audio_source
 
     def _build_doa_poller(self) -> DaemonDoAPoller | None:
-        """Create the robot-side DoA poller when the tracker can use target lists."""
-        if not self._supports_spatial_speaker_tracking():
-            return None
-        return build_daemon_spatial_audio_source(self.reachy_mini)
+        """Return no DoA poller because runtime spatial audio is disabled."""
+        return None
 
     def _supports_spatial_speaker_tracking(self) -> bool:
         """Return whether the active tracker can provide all visible targets."""
@@ -298,7 +284,7 @@ class CameraWorker:
         match_text = "" if matching_faces is None else f" matching_faces={matching_faces}"
         selected_text = "" if selected is None else f" selected_x={selected.x_offset:.2f}"
         logger.debug(
-            "Spatial audio: sound not in front heard event=%s direction=%s x_offset=%.2f angle=%.2f "
+            "Deprecated DoA speaker steering ignored event=%s direction=%s x_offset=%.2f angle=%.2f "
             "speech_detected=%s visible_faces=%d%s%s",
             event,
             direction,

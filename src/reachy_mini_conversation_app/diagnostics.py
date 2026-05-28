@@ -15,6 +15,9 @@ class PerformanceSnapshot:
     media_state: dict[str, object] = field(default_factory=dict)
     transport: dict[str, object] = field(default_factory=dict)
     health_checks: dict[str, object] = field(default_factory=dict)
+    local_model: dict[str, object] = field(default_factory=dict)
+    local_tts: dict[str, object] = field(default_factory=dict)
+    voice_activity: dict[str, object] = field(default_factory=dict)
     camera_frame_age_ms: float | None = None
     camera_fps: float | None = None
     audio_input_frames: int = 0
@@ -35,6 +38,9 @@ class PerformanceSnapshot:
             "media_state": self.media_state,
             "transport": self.transport,
             "health_checks": self.health_checks,
+            "local_model": self.local_model,
+            "local_tts": self.local_tts,
+            "voice_activity": self.voice_activity,
             "camera_frame_age_ms": self.camera_frame_age_ms,
             "camera_fps": self.camera_fps,
             "audio_input_frames": self.audio_input_frames,
@@ -78,6 +84,40 @@ class PerformanceDiagnostics:
         """Record robot health-check results."""
         with self._lock:
             self._snapshot.health_checks = dict(checks)
+
+    def set_local_model(self, **payload: object) -> None:
+        """Record local Ollama model capability diagnostics."""
+        with self._lock:
+            merged = dict(self._snapshot.local_model)
+            merged.update(payload)
+            self._snapshot.local_model = merged
+
+    def set_local_tts(self, **payload: object) -> None:
+        """Record local Piper TTS readiness diagnostics."""
+        with self._lock:
+            merged = dict(self._snapshot.local_tts)
+            merged.update(payload)
+            self._snapshot.local_tts = merged
+
+    def set_voice_activity(self, **payload: object) -> None:
+        """Record local VAD and robot-noise suppression diagnostics."""
+        with self._lock:
+            merged = dict(self._snapshot.voice_activity)
+            merged.update(payload)
+            self._snapshot.voice_activity = merged
+
+    def record_rejected_segment(self, *, reason: str, source: str = "vad", **payload: object) -> None:
+        """Count and annotate a rejected local voice segment."""
+        with self._lock:
+            merged = dict(self._snapshot.voice_activity)
+            merged["rejected_segment_count"] = int(merged.get("rejected_segment_count") or 0) + 1
+            merged["last_reject_reason"] = reason
+            if source == "stt":
+                merged["last_stt_reject_reason"] = reason
+            else:
+                merged["last_vad_reject_reason"] = reason
+            merged.update(payload)
+            self._snapshot.voice_activity = merged
 
     def record_camera_frame(self) -> None:
         """Record that a camera frame was received."""

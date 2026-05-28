@@ -29,7 +29,7 @@ def test_ollama_vision_sends_image_chat_payload() -> None:
         captured["timeout"] = timeout
         return _Response()
 
-    analyzer = OllamaVisionAnalyzer(base_url="http://ollama.test", model="gemma3:test", timeout_seconds=7)
+    analyzer = OllamaVisionAnalyzer(base_url="http://ollama.test", model="qwen3.5:test", timeout_seconds=7)
     frame = np.zeros((16, 16, 3), dtype=np.uint8)
 
     with patch("reachy_mini_conversation_app.vision.analyzers.urlopen", fake_urlopen):
@@ -38,9 +38,10 @@ def test_ollama_vision_sends_image_chat_payload() -> None:
     assert result == "A red cup."
     assert captured["url"] == "http://ollama.test/api/chat"
     assert captured["timeout"] == 7
-    assert captured["payload"]["model"] == "gemma3:test"
+    assert captured["payload"]["model"] == "qwen3.5:test"
+    assert captured["payload"]["think"] is False
+    assert captured["payload"]["options"]["num_predict"] == 128
     message = captured["payload"]["messages"][0]
     assert message["role"] == "user"
     assert "What is visible?" in message["content"]
     assert len(message["images"]) == 1
-

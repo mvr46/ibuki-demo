@@ -3,13 +3,11 @@
 from __future__ import annotations
 from pathlib import Path
 
-import numpy as np
-
-from reachy_mini_conversation_app.local_tts import PiperTTSAdapter
+from reachy_mini_conversation_app.local_tts import PiperTTSAdapter, piper_tts_status
 
 
-def test_piper_tts_falls_back_to_macos_say(monkeypatch) -> None:
-    """Missing Piper should use macOS say and return converted PCM audio."""
+def test_piper_tts_does_not_fall_back_to_macos_say(monkeypatch) -> None:
+    """Missing Piper or PIPER_VOICE should return silence without invoking say."""
     calls = []
 
     def fake_which(name: str) -> str | None:
@@ -34,17 +32,26 @@ def test_piper_tts_falls_back_to_macos_say(monkeypatch) -> None:
 
         return Proc()
 
-    def fake_read(path: Path) -> tuple[int, np.ndarray]:
-        assert path.name == "speech.wav"
-        return 24000, np.ones(8, dtype=np.int16)
-
     monkeypatch.setattr("reachy_mini_conversation_app.local_tts.shutil.which", fake_which)
     monkeypatch.setattr("reachy_mini_conversation_app.local_tts.subprocess.run", fake_run)
-    monkeypatch.setattr("reachy_mini_conversation_app.local_tts.wavfile.read", fake_read)
 
     sample_rate, audio = PiperTTSAdapter(voice_model=None)._synthesize_sync("hello")
 
-    assert sample_rate == 24000
-    assert audio.shape == (8,)
-    assert calls[0][0] == "/usr/bin/say"
-    assert calls[1][0] == "/usr/bin/afconvert"
+    assert sample_rate == 22050
+    assert audio.size == 0
+    assert calls == []
+
+
+def test_piper_status_requires_voice_file(monkeypatch, tmp_path: Path) -> None:
+    """Piper readiness should require both binary and a real voice model path."""
+    voice = tmp_path / "voice.onnx"
+    voice.write_bytes(b"voice")
+    monkeypatch.setattr("reachy_mini_conversation_app.local_tts.shutil.which", lambda name: "/usr/bin/piper")
+
+    ready = piper_tts_status(str(voice))
+    missing = piper_tts_status(str(tmp_path / "missing.onnx"))
+
+    assert ready["ready"] is True
+    assert ready["error"] is None
+    assert missing["ready"] is False
+    assert missing["error"] == "invalid_piper_voice"

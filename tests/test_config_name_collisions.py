@@ -83,10 +83,17 @@ def test_huggingface_backend_does_not_resolve_model_name() -> None:
 
 def test_local_backend_resolves_ollama_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """Local backend should use the Ollama model selector."""
-    monkeypatch.setenv("OLLAMA_MODEL", "gemma3:test")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:test")
 
     assert config_mod._normalize_backend_provider("local", None) == config_mod.LOCAL_BACKEND
-    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "gemma3:test"
+    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "qwen3.5:test"
+
+
+def test_local_backend_defaults_to_gemma3_4b(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local backend should default to Gemma for normal local chat and vision."""
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+
+    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "gemma3:4b"
 
 
 def test_hf_default_session_url_uses_stable_space_proxy() -> None:

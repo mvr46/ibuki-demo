@@ -15,8 +15,9 @@ from numpy.typing import NDArray
 from fastapi.testclient import TestClient
 
 from reachy_mini.media.media_manager import MediaBackend
-from reachy_mini_conversation_app.config import GEMINI_AVAILABLE_VOICES, config
+from reachy_mini_conversation_app.config import LOCAL_BACKEND, GEMINI_AVAILABLE_VOICES, config
 from reachy_mini_conversation_app.console import LOCAL_PLAYER_BACKEND, LocalStream
+from reachy_mini_conversation_app.diagnostics import PerformanceDiagnostics
 from reachy_mini_conversation_app.startup_settings import (
     StartupSettings,
     load_startup_settings_into_runtime,
@@ -72,6 +73,54 @@ def test_clear_audio_queue_falls_back_when_backend_is_unknown() -> None:
     audio.clear_output_buffer.assert_called_once()
     assert isinstance(handler.output_queue, asyncio.Queue)
     assert handler.output_queue.empty()
+
+
+def test_refresh_performance_health_marks_doa_deprecated_without_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dashboard health should not poll /api/state/doa after DoA deprecation."""
+    diagnostics = PerformanceDiagnostics()
+    handler = MagicMock()
+    handler.deps = SimpleNamespace(performance_diagnostics=diagnostics)
+    robot = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1", port=8000), media=SimpleNamespace())
+    stream = LocalStream(handler, robot)
+    fetched_urls: list[str] = []
+
+    def fake_fetch(url: str, *, timeout: float) -> dict[str, object]:
+        fetched_urls.append(url)
+        if url.endswith("/api/daemon/status"):
+            return {"state": "running"}
+        if url.endswith("/api/media/status"):
+            return {"available": True, "released": False}
+        if url.endswith("/api/state/full"):
+            return {"timestamp": 1}
+        return {}
+
+    monkeypatch.setattr("reachy_mini_conversation_app.console.measure_http_rtt_ms", lambda *args, **kwargs: 1.0)
+    monkeypatch.setattr("reachy_mini_conversation_app.console.probe_host", lambda *args, **kwargs: True)
+    monkeypatch.setattr("reachy_mini_conversation_app.console._fetch_json_dict", fake_fetch)
+    monkeypatch.setattr(
+        "reachy_mini_conversation_app.console._ollama_model_status",
+        lambda *args, **kwargs: {"configured_model": "qwen3.5:4b", "installed": True},
+    )
+
+    stream._refresh_performance_health()
+
+    snapshot = diagnostics.snapshot()
+    assert all("/api/state/doa" not in url for url in fetched_urls)
+    assert snapshot["health_checks"]["doa_status"] == "disabled/deprecated"
+    assert snapshot["local_model"]["configured_model"] == "qwen3.5:4b"
+
+
+def test_local_backend_requires_ready_piper_voice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local backend readiness should fail when Piper or PIPER_VOICE is not ready."""
+    handler = MagicMock()
+    robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+    stream = LocalStream(handler, robot)
+
+    monkeypatch.setattr("reachy_mini_conversation_app.local_tts.shutil.which", lambda name: "/usr/bin/piper")
+    monkeypatch.setattr(config, "PIPER_VOICE", None)
+
+    assert stream._has_required_key(LOCAL_BACKEND) is False
+    assert stream._requirement_name(LOCAL_BACKEND) == "PIPER_VOICE"
 
 
 @pytest.mark.asyncio

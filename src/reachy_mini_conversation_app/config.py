@@ -119,8 +119,9 @@ DEFAULT_MODEL_NAME_BY_BACKEND = {
     OPENAI_BACKEND: "gpt-realtime-2",
     GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
     HF_BACKEND: HF_DEFAULTS.model_name,
-    LOCAL_BACKEND: "gemma3:latest",
+    LOCAL_BACKEND: "gemma3:4b",
 }
+DEFAULT_LOCAL_ROUTER_MODEL = "qwen3.5:4b"
 BACKEND_LABEL_BY_PROVIDER = {
     OPENAI_BACKEND: "OpenAI Realtime",
     GEMINI_BACKEND: "Gemini Live",
@@ -385,7 +386,8 @@ class Config:
     HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
     REACHY_MEDIA_HOST = os.getenv(REACHY_MEDIA_HOST_ENV)
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND])
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or MODEL_NAME or DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND]
+    OLLAMA_ROUTER_MODEL = os.getenv("OLLAMA_ROUTER_MODEL", DEFAULT_LOCAL_ROUTER_MODEL)
     LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
     LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
     LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")
@@ -496,7 +498,8 @@ def refresh_runtime_config_from_env() -> None:
     config.HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
     config.REACHY_MEDIA_HOST = os.getenv(REACHY_MEDIA_HOST_ENV)
     config.OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    config.OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND])
+    config.OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or config.MODEL_NAME or DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND]
+    config.OLLAMA_ROUTER_MODEL = os.getenv("OLLAMA_ROUTER_MODEL", DEFAULT_LOCAL_ROUTER_MODEL)
     config.LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
     config.LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
     config.LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")

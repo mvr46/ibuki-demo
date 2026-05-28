@@ -805,6 +805,11 @@ class MovementManager:
             "queue_size": len(self.move_queue),
             "is_listening": self._is_listening,
             "breathing_active": self._breathing_active,
+            "active_primary_move": type(self.state.current_move).__name__ if self.state.current_move is not None else None,
+            "active_motion": bool(
+                (self.state.current_move is not None and not isinstance(self.state.current_move, BreathingMove))
+                or self.move_queue
+            ),
             "last_commanded_pose": {
                 "head": head_matrix,
                 "antennas": antennas,

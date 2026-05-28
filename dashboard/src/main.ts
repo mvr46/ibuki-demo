@@ -32,6 +32,9 @@ type PerformanceStatus = {
   media_state?: Record<string, unknown>;
   transport?: Record<string, unknown>;
   health_checks?: Record<string, unknown>;
+  local_model?: Record<string, unknown>;
+  local_tts?: Record<string, unknown>;
+  voice_activity?: Record<string, unknown>;
   camera_frame_age_ms?: number | null;
   camera_fps?: number | null;
   audio_input_frames?: number;
@@ -197,8 +200,12 @@ const elements = {
   diagHealth: byId("diag-health"),
   diagCamera: byId("diag-camera"),
   diagAudio: byId("diag-audio"),
+  diagVad: byId("diag-vad"),
+  diagNoise: byId("diag-noise"),
+  diagRejects: byId("diag-rejects"),
   diagStt: byId("diag-stt"),
   diagLlm: byId("diag-llm"),
+  diagRouter: byId("diag-router"),
   diagTts: byId("diag-tts"),
   backendGrid: byId("backend-grid"),
   apiKey: byId<HTMLInputElement>("api-key"),
@@ -334,17 +341,24 @@ function renderDiagnostics(): void {
   const transport = performance.transport || {};
   const mediaState = performance.media_state || {};
   const health = performance.health_checks || {};
+  const localModel = performance.local_model || {};
+  const localTts = performance.local_tts || {};
+  const voiceActivity = performance.voice_activity || {};
   const mediaSource = shortValue(transport.media_host_source);
   elements.diagControlHost.textContent = shortValue(transport.control_host);
   elements.diagMediaHost.textContent = `${shortValue(transport.media_host)} (${mediaSource})`;
   elements.diagDaemon.textContent = `${shortValue(performance.daemon_state)} / ${formatMs(performance.daemon_rtt_ms)}`;
   elements.diagMediaState.textContent = `available ${shortValue(mediaState.available)}, released ${shortValue(mediaState.released)}`;
-  elements.diagHealth.textContent = `daemon ${shortValue(health.daemon_running)}, media ${shortValue(health.media_available)}, doa ${shortValue(health.doa_available)}, wired ${shortValue(health.wired_link_present)}`;
+  elements.diagHealth.textContent = `daemon ${shortValue(health.daemon_running)}, media ${shortValue(health.media_available)}, doa ${shortValue(health.doa_status || health.doa_available)}, wired ${shortValue(health.wired_link_present)}, model ${shortValue(localModel.configured_model)} installed ${shortValue(localModel.installed)}`;
   elements.diagCamera.textContent = `${formatFps(performance.camera_fps)} / age ${formatMs(performance.camera_frame_age_ms)}`;
   elements.diagAudio.textContent = `in ${shortValue(performance.audio_input_frames)}, out ${shortValue(performance.audio_output_frames)}, drop ${shortValue(performance.dropped_audio_frames)}, q ${shortValue(performance.audio_queue_depth_s)}s`;
-  elements.diagStt.textContent = formatMs(performance.stt_ms);
+  elements.diagVad.textContent = `${shortValue(voiceActivity.vad_state)}, active ${shortValue(voiceActivity.active_motion_playback)}`;
+  elements.diagNoise.textContent = `floor ${shortValue(voiceActivity.noise_floor_rms)}, conf ${shortValue(voiceActivity.speech_confidence_ratio)}, window ${shortValue(voiceActivity.robot_noise_suppression_window_ms)}ms`;
+  elements.diagRejects.textContent = `${shortValue(voiceActivity.rejected_segment_count)} / ${shortValue(voiceActivity.last_reject_reason)}`;
+  elements.diagStt.textContent = `${formatMs(performance.stt_ms)} / reject ${shortValue(voiceActivity.last_stt_reject_reason)}`;
   elements.diagLlm.textContent = `${formatMs(performance.llm_first_token_ms)} first / ${formatMs(performance.llm_total_ms)} total`;
-  elements.diagTts.textContent = `${formatMs(performance.tts_ms)} / first audio ${formatMs(performance.first_audio_ms)}`;
+  elements.diagRouter.textContent = `${formatMs(Number(localModel.qwen_router_latency_ms))} / ${shortValue(localModel.qwen_router_status)}`;
+  elements.diagTts.textContent = `${shortValue(localTts.ready)} ${shortValue(localTts.error)} / ${formatMs(performance.tts_ms)} / first audio ${formatMs(performance.first_audio_ms)}`;
 }
 
 function renderProcessControls(): void {
