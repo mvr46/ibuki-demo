@@ -27,7 +27,7 @@ except ModuleNotFoundError:
     AutoProcessor = None
     AutoModelForImageTextToText = None
 
-from reachy_mini_conversation_app.config import config
+from reachy_mini_conversation_app.runtime.config import config
 
 
 logger = logging.getLogger(__name__)

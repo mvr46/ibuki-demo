@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker, format_attributed_speech
-from reachy_mini_conversation_app.face_identity_worker import VisibleTrackObservation
+from reachy_mini_conversation_app.vision.speaker_attribution import SpeakerAttributionWorker, format_attributed_speech
+from reachy_mini_conversation_app.vision.face_identity_worker import VisibleTrackObservation
 from reachy_mini_conversation_app.vision.head_tracking.speaker import SpatialAudioSample
 
 

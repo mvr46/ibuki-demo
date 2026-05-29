@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # Initialize dance library
 try:
     from reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
-    from reachy_mini_conversation_app.dance_emotion_moves import DanceQueueMove
+    from reachy_mini_conversation_app.motion.dance_emotion_moves import DanceQueueMove
 
     DANCE_AVAILABLE = True
 except ImportError as e:

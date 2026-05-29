@@ -3,7 +3,7 @@ from typing import Any, Dict, Tuple, Literal
 
 from reachy_mini.utils import create_head_pose
 from reachy_mini_conversation_app.tools.core_tools import Tool, ToolDependencies
-from reachy_mini_conversation_app.dance_emotion_moves import GotoQueueMove
+from reachy_mini_conversation_app.motion.dance_emotion_moves import GotoQueueMove
 
 
 logger = logging.getLogger(__name__)

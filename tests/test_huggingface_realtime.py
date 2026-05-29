@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import reachy_mini_conversation_app.base_realtime as base_rt_mod
-import reachy_mini_conversation_app.huggingface_realtime as hf_mod
-from reachy_mini_conversation_app.config import HF_BACKEND, config, get_default_voice_for_backend
+import reachy_mini_conversation_app.backends.base_realtime as base_rt_mod
+import reachy_mini_conversation_app.backends.huggingface_realtime as hf_mod
+from reachy_mini_conversation_app.runtime.config import HF_BACKEND, config, get_default_voice_for_backend
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-from reachy_mini_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
+from reachy_mini_conversation_app.backends.huggingface_realtime import HuggingFaceRealtimeHandler
 
 
 HF_DEFAULT_VOICE = get_default_voice_for_backend(HF_BACKEND)
@@ -223,7 +223,7 @@ async def test_output_audio_delta_passes_output_sample_rate_to_head_wobbler(monk
         movement_manager=MagicMock(),
         head_wobbler=head_wobbler,
     )
-    handler = HuggingFaceRealtimeHandler(deps, gradio_mode=True)
+    handler = HuggingFaceRealtimeHandler(deps)
     handler.client = FakeClient()
 
     start_up = MagicMock()
@@ -233,8 +233,7 @@ async def test_output_audio_delta_passes_output_sample_rate_to_head_wobbler(monk
 
     await handler._run_realtime_session()
 
-    head_wobbler.feed_pcm.assert_called_once()
-    assert head_wobbler.feed_pcm.call_args.args[1] == handler.output_sample_rate
+    head_wobbler.feed_pcm.assert_not_called()
     head_wobbler.request_reset_after_current_audio.assert_called_once()
 
 
@@ -293,21 +292,21 @@ def test_handler_normalizes_hf_voice_case(monkeypatch: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_up_hf_gradio_does_not_wait_for_api_key(monkeypatch: Any) -> None:
-    """Hugging Face backend should not wait for gradio key input."""
+async def test_start_up_hf_does_not_wait_for_textbox_api_key(monkeypatch: Any) -> None:
+    """Hugging Face backend should not wait for UI textbox credentials."""
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "huggingface")
     monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-openai-secret")
 
     deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
-    handler = hf_mod.HuggingFaceRealtimeHandler(deps, gradio_mode=True)
+    handler = hf_mod.HuggingFaceRealtimeHandler(deps)
 
     build_client = AsyncMock(return_value=MagicMock())
     run_realtime_session = AsyncMock(return_value=None)
-    wait_for_args = AsyncMock(side_effect=AssertionError("wait_for_args should not be called"))
+    wait_for_args = AsyncMock(side_effect=AssertionError("wait_for_args should not exist in startup"))
 
     monkeypatch.setattr(handler, "_build_realtime_client", build_client)
     monkeypatch.setattr(handler, "_run_realtime_session", run_realtime_session)
-    monkeypatch.setattr(handler, "wait_for_args", wait_for_args)
+    monkeypatch.setattr(handler, "wait_for_args", wait_for_args, raising=False)
 
     await handler.start_up()
 

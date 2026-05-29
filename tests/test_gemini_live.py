@@ -8,14 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import numpy as np
 import pytest
-from fastrtc import AdditionalOutputs
 
-import reachy_mini_conversation_app.gemini_live as gemini_mod
-import reachy_mini_conversation_app.tools.core_tools as ct_mod
-from reachy_mini_conversation_app.gemini_live import GeminiLiveHandler
+import reachy_mini_conversation_app.backends.gemini_live as gemini_mod
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
+from reachy_mini_conversation_app.runtime.streaming import AdditionalOutputs
+from reachy_mini_conversation_app.backends.gemini_live import GeminiLiveHandler
 from reachy_mini_conversation_app.tools.tool_constants import ToolState
+from reachy_mini_conversation_app.vision.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.background_tool_manager import ToolNotification
 
 
@@ -294,7 +293,7 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch) ->
     """Applying a profile should keep a manually selected Gemini voice active."""
     monkeypatch.setattr(gemini_mod, "get_session_instructions", lambda: "test")
     monkeypatch.setattr(gemini_mod, "get_session_voice", lambda: "Kore")
-    monkeypatch.setattr("reachy_mini_conversation_app.config.set_custom_profile", lambda _profile: None)
+    monkeypatch.setattr("reachy_mini_conversation_app.runtime.config.set_custom_profile", lambda _profile: None)
 
     handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.session = object()
@@ -304,7 +303,7 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch) ->
 
     status = await handler.apply_personality("example")
 
-    assert status == "Applied personality and restarted Gemini session."
+    assert status == "Applied profile and restarted Gemini session."
     assert handler.get_current_voice() == "Orus"
     restart.assert_awaited_once()
 
@@ -337,23 +336,13 @@ def test_gemini_excludes_head_tracking_when_no_head_tracker(monkeypatch) -> None
     monkeypatch.setattr(gemini_mod, "get_session_instructions", lambda: "test")
     monkeypatch.setattr(gemini_mod, "get_session_voice", lambda: "Kore")
 
-    # mock ALL_TOOL_SPECS to include at least head_tracking and one other tool, to verify that only head_tracking is excluded, not all tools
-    monkeypatch.setattr(
-        ct_mod,
-        "ALL_TOOL_SPECS",
-        [
-            {"type": "function", "name": "head_tracking", "description": "head_tracking", "parameters": {}},
-            {"type": "function", "name": "fake_tool", "description": "fake_tool", "parameters": {}},
-        ],
-    )
-
     # case 1: no camera at all, --no-camera flag passed
     deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock(), camera_worker=None)
     handler = GeminiLiveHandler(deps)
     live_config = handler._build_live_config()
     tool_names = [fd.name for fd in live_config.tools[0].function_declarations] if live_config.tools else []
     assert "head_tracking" not in tool_names, "case 1 failed: camera_worker=None"
-    assert "fake_tool" in tool_names, "case 1 failed: a non-head-tracking tool was unexpectedly excluded"
+    assert "move_head" in tool_names, "case 1 failed: a non-head-tracking tool was unexpectedly excluded"
 
     # case 2: camera is running but --head-tracker flag was not passed
     camera_worker = MagicMock()
@@ -363,4 +352,4 @@ def test_gemini_excludes_head_tracking_when_no_head_tracker(monkeypatch) -> None
     live_config = handler._build_live_config()
     tool_names = [fd.name for fd in live_config.tools[0].function_declarations] if live_config.tools else []
     assert "head_tracking" not in tool_names, "case 2 failed: camera_worker.head_tracker=None"
-    assert "fake_tool" in tool_names, "case 2 failed: a non-head-tracking tool was unexpectedly excluded"
+    assert "move_head" in tool_names, "case 2 failed: a non-head-tracking tool was unexpectedly excluded"

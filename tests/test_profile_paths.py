@@ -5,12 +5,12 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-import reachy_mini_conversation_app.config as config_mod
-import reachy_mini_conversation_app.prompts as prompts_mod
-import reachy_mini_conversation_app.headless_personality as headless_mod
-from reachy_mini_conversation_app.config import DEFAULT_PROFILES_DIRECTORY, config
-from reachy_mini_conversation_app.gradio_personality import PersonalityUI
-from reachy_mini_conversation_app.headless_personality import (
+import reachy_mini_conversation_app.runtime.config as config_mod
+import reachy_mini_conversation_app.profiles.prompts as prompts_mod
+import reachy_mini_conversation_app.profiles.headless as headless_mod
+from reachy_mini_conversation_app.profiles.store import ProfileStore
+from reachy_mini_conversation_app.runtime.config import DEFAULT_PROFILES_DIRECTORY, config
+from reachy_mini_conversation_app.profiles.headless import (
     DEFAULT_OPTION,
     read_tools_for,
     resolve_profile_dir,
@@ -63,58 +63,49 @@ def _git_tracked_files(project_root: Path) -> list[Path]:
 
 
 def test_profile_name_resolves_directly_to_storage_dir() -> None:
-    """Built-in profile names should map directly to their on-disk directory."""
-    profile_dir = resolve_profile_dir("mad_scientist_assistant")
+    """Production profile names should map directly to their on-disk directory."""
+    profile_dir = resolve_profile_dir("default")
 
-    assert profile_dir.name == "mad_scientist_assistant"
+    assert profile_dir.name == "default"
     assert (profile_dir / "instructions.txt").is_file()
 
 
-def test_prompts_load_from_compact_builtin_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prompt loading should read compact built-in profile instructions directly."""
-    monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", "mad_scientist_assistant")
-    monkeypatch.setattr(config, "PROFILES_DIRECTORY", DEFAULT_PROFILES_DIRECTORY)
+def test_prompts_load_from_repo_backed_default_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prompt loading should read and expand the repo-backed default profile."""
+    monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
+    raw = ProfileStore().load("default").instructions
 
-    expected = (
-        (DEFAULT_PROFILES_DIRECTORY / "mad_scientist_assistant" / "instructions.txt")
-        .read_text(encoding="utf-8")
-        .strip()
-    )
-
-    assert prompts_mod.get_session_instructions() == expected
-    assert read_instructions_for("mad_scientist_assistant") == expected
+    assert prompts_mod.get_session_instructions() == raw
+    assert read_instructions_for("default") == raw
 
 
 def test_builtin_default_profile_tools_load_for_ui() -> None:
-    """The UI should read built-in default tools from the packaged default profile."""
+    """The UI should read default tools from the production profile."""
     expected = (DEFAULT_PROFILES_DIRECTORY / "default" / "tools.txt").read_text(encoding="utf-8")
 
     assert read_tools_for(DEFAULT_OPTION) == expected
 
 
-def test_gradio_personality_ui_prefills_builtin_default_tools(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Gradio should show the built-in default profile tools on first render."""
-    monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
+def test_profile_store_saves_new_and_overwrites(tmp_path: Path) -> None:
+    """ProfileStore should own profile creation, overwrite, and name sanitization."""
+    store = ProfileStore(tmp_path)
 
-    ui = PersonalityUI()
-    ui.create_components()
+    created = store.save_new("Demo Profile", instructions="Hello", tools_text="dance\n# ignored\ncamera\n")
+    overwritten = store.overwrite("Demo_Profile", instructions="Hello again", tools_text="move_head\n", voice="local")
 
-    expected_tools = read_tools_for(ui.DEFAULT_OPTION)
-    expected_enabled = [
-        line.strip() for line in expected_tools.splitlines() if line.strip() and not line.strip().startswith("#")
-    ]
-
-    assert ui.tools_txt_ta.value == expected_tools
-    assert sorted(ui.available_tools_cg.value) == sorted(expected_enabled)
+    assert created.name == "Demo_Profile"
+    assert overwritten.instructions == "Hello again"
+    assert overwritten.tools == ("move_head",)
+    assert overwritten.voice == "local"
 
 
 def test_session_voice_defaults_follow_selected_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Session voice should fall back to the active backend default."""
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
-    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "local")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemma3:latest")
     monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
 
-    assert prompts_mod.get_session_voice() == "Kore"
+    assert prompts_mod.get_session_voice() == "local"
 
 
 def test_headless_profile_write_defaults_voice_at_call_time(
@@ -122,14 +113,14 @@ def test_headless_profile_write_defaults_voice_at_call_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """New headless profiles should use the currently selected backend default voice."""
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
-    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
-    monkeypatch.setattr(headless_mod, "_profiles_root", lambda: tmp_path)
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "local")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemma3:latest")
+    monkeypatch.setattr(headless_mod, "_store", ProfileStore(tmp_path))
 
     headless_mod._write_profile("runtime_voice_default", "test instructions", "")
 
-    voice_file = tmp_path / "user_personalities" / "runtime_voice_default" / "voice.txt"
-    assert voice_file.read_text(encoding="utf-8") == "Kore\n"
+    voice_file = tmp_path / "runtime_voice_default" / "voice.txt"
+    assert voice_file.read_text(encoding="utf-8") == "local\n"
 
 
 def test_packaged_profiles_win_outside_source_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

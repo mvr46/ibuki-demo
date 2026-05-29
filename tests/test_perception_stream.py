@@ -7,10 +7,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from reachy_mini_conversation_app.perception_stream import _format_event, _format_snapshot, run_perception_stream
-from reachy_mini_conversation_app.face_identity_worker import VisionEvent, PerceptionSnapshot
 from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
+from reachy_mini_conversation_app.vision.perception_stream import (
+    _format_event,
+    _format_snapshot,
+    run_perception_stream,
+)
+from reachy_mini_conversation_app.vision.face_identity_worker import VisionEvent, PerceptionSnapshot
 
 
 class _FakeHandler:

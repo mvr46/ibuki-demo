@@ -8,11 +8,11 @@ import numpy as np
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from reachy_mini_conversation_app.console import LocalStream
-from reachy_mini_conversation_app.dashboard import DashboardLogBuffer, sse_event, classify_log
-from reachy_mini_conversation_app.face_identity_worker import PerceptionSnapshot
+from reachy_mini_conversation_app.runtime.console import LocalStream
+from reachy_mini_conversation_app.runtime.dashboard import DashboardLogBuffer, sse_event, classify_log
 from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
+from reachy_mini_conversation_app.vision.face_identity_worker import PerceptionSnapshot
 from reachy_mini_conversation_app.vision.face_recognition_lib import Person
 
 
@@ -163,7 +163,7 @@ def test_dashboard_log_buffer_limits_and_formats_sse() -> None:
 
     assert first not in snapshot
     assert [event.id for event in snapshot] == [second.id, third.id]
-    assert classify_log("reachy_mini_conversation_app.camera_worker", "frame ready") == "VISION"
+    assert classify_log("reachy_mini_conversation_app.vision.camera_worker", "frame ready") == "VISION"
     payload = sse_event(third)
     assert f"id: {third.id}" in payload
     assert "event: log" in payload

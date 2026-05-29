@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from reachy_mini_conversation_app.local_llm import LocalLLMResponse
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-from reachy_mini_conversation_app.local_conversation import LocalConversationHandler
-from reachy_mini_conversation_app.local_turn_detector import LocalTurnDetector, LocalTurnDetectorConfig
+from reachy_mini_conversation_app.backends.local_llm import LocalLLMResponse
+from reachy_mini_conversation_app.backends.local_conversation import LocalConversationHandler
+from reachy_mini_conversation_app.backends.local_turn_detector import LocalTurnDetector, LocalTurnDetectorConfig
 
 
 SR = 16000

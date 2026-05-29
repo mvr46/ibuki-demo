@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from reachy_mini_conversation_app.camera_worker import CameraWorker
+from reachy_mini_conversation_app.vision.camera_worker import CameraWorker
 from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
 from reachy_mini_conversation_app.vision.head_tracking.speaker import target_from_doa

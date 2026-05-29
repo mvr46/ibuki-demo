@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from reachy_mini_conversation_app.local_stt import MLXWhisperSTTAdapter, reject_transcript_reason
+from reachy_mini_conversation_app.backends.local_stt import MLXWhisperSTTAdapter, reject_transcript_reason
 
 
 def test_mlx_whisper_uses_strict_english_noise_hardening_kwargs(monkeypatch) -> None:

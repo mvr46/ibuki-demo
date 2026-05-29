@@ -159,7 +159,7 @@ function dashboardProcessPlugin(): Plugin {
       return "VISION";
     }
     if (lowered.includes("tool")) return "TOOL";
-    if (lowered.includes("openai") || lowered.includes("gemini") || lowered.includes("huggingface") || lowered.includes("realtime")) {
+    if (lowered.includes("llm") || lowered.includes("huggingface") || lowered.includes("realtime")) {
       return "LLM";
     }
     if (lowered.includes("audio") || lowered.includes("voice") || lowered.includes("speech")) return "VOICE";
@@ -482,7 +482,7 @@ function dashboardProcessPlugin(): Plugin {
     return (
       pathname.startsWith("/api") ||
       pathname === "/backend_config" ||
-      pathname.startsWith("/personalities") ||
+      pathname.startsWith("/profiles") ||
       pathname.startsWith("/voices") ||
       pathname === "/ready" ||
       pathname === "/status"
@@ -491,11 +491,8 @@ function dashboardProcessPlugin(): Plugin {
 
   function fallbackBackendStatus(): Record<string, unknown> {
     return {
-      active_backend: "huggingface",
-      backend_provider: "huggingface",
-      has_key: false,
-      has_openai_key: false,
-      has_gemini_key: false,
+      active_backend: "local",
+      backend_provider: "local",
       has_local_backend: false,
       has_hf_session_url: false,
       has_hf_ws_url: false,
@@ -504,8 +501,6 @@ function dashboardProcessPlugin(): Plugin {
       hf_direct_host: "localhost",
       hf_direct_port: 8765,
       can_proceed: false,
-      can_proceed_with_openai: false,
-      can_proceed_with_gemini: false,
       can_proceed_with_hf: false,
       can_proceed_with_local: false,
       requires_restart: false,
@@ -699,7 +694,7 @@ export default defineConfig({
         target: backendTarget,
         changeOrigin: true,
       },
-      "/personalities": {
+      "/profiles": {
         target: backendTarget,
         changeOrigin: true,
       },

@@ -6,8 +6,6 @@ type LevelFilter = "ALL" | "INFO" | "WARNING" | "ERROR";
 type BackendStatus = {
   active_backend?: string;
   backend_provider?: string;
-  has_openai_key?: boolean;
-  has_gemini_key?: boolean;
   has_hf_connection?: boolean;
   has_hf_session_url?: boolean;
   has_hf_ws_url?: boolean;
@@ -15,8 +13,6 @@ type BackendStatus = {
   hf_direct_host?: string;
   hf_direct_port?: number;
   can_proceed?: boolean;
-  can_proceed_with_openai?: boolean;
-  can_proceed_with_gemini?: boolean;
   can_proceed_with_hf?: boolean;
   can_proceed_with_local?: boolean;
   ollama_base_url?: string;
@@ -118,14 +114,14 @@ type ProcessStatus = {
   failureHint?: string | null;
 };
 
-type PersonalityList = {
+type ProfileList = {
   choices: string[];
   current: string;
   startup: string;
   locked?: boolean;
 };
 
-type PersonalityPayload = {
+type ProfilePayload = {
   instructions: string;
   tools_text: string;
   voice: string;
@@ -133,11 +129,9 @@ type PersonalityPayload = {
   enabled_tools: string[];
 };
 
-const OPENAI_BACKEND = "openai";
-const GEMINI_BACKEND = "gemini";
 const HF_BACKEND = "huggingface";
 const LOCAL_BACKEND = "local";
-const DEFAULT_BACKEND = HF_BACKEND;
+const DEFAULT_BACKEND = LOCAL_BACKEND;
 
 const AUTO_WITH: Record<string, string[]> = {
   dance: ["stop_dance"],
@@ -208,25 +202,25 @@ const elements = {
   diagRouter: byId("diag-router"),
   diagTts: byId("diag-tts"),
   backendGrid: byId("backend-grid"),
-  apiKey: byId<HTMLInputElement>("api-key"),
   hfFields: byId("hf-fields"),
   hfMode: byId<HTMLSelectElement>("hf-mode"),
   hfHost: byId<HTMLInputElement>("hf-host"),
   hfPort: byId<HTMLInputElement>("hf-port"),
   saveBackend: byId<HTMLButtonElement>("save-backend"),
   backendStatus: byId("backend-status"),
-  personalitySelect: byId<HTMLSelectElement>("personality-select"),
-  applyPersonality: byId<HTMLButtonElement>("apply-personality"),
-  persistPersonality: byId<HTMLButtonElement>("persist-personality"),
-  personalityName: byId<HTMLInputElement>("personality-name"),
+  profileSelect: byId<HTMLSelectElement>("profile-select"),
+  applyProfile: byId<HTMLButtonElement>("apply-profile"),
+  persistProfile: byId<HTMLButtonElement>("persist-profile"),
+  profileName: byId<HTMLInputElement>("profile-name"),
   instructions: byId<HTMLTextAreaElement>("instructions-ta"),
   toolsText: byId<HTMLTextAreaElement>("tools-ta"),
   voiceSelect: byId<HTMLSelectElement>("voice-select"),
   applyVoice: byId<HTMLButtonElement>("apply-voice"),
-  newPersonality: byId<HTMLButtonElement>("new-personality"),
+  newProfile: byId<HTMLButtonElement>("new-profile"),
   toolsAvailable: byId("tools-available"),
-  savePersonality: byId<HTMLButtonElement>("save-personality"),
-  personalityStatus: byId("personality-status"),
+  saveProfile: byId<HTMLButtonElement>("save-profile"),
+  overwriteProfile: byId<HTMLButtonElement>("overwrite-profile"),
+  profileStatus: byId("profile-status"),
   logs: byId<HTMLOListElement>("logs"),
   logSearch: byId<HTMLInputElement>("log-search"),
   clearLogs: byId<HTMLButtonElement>("clear-logs"),
@@ -270,8 +264,6 @@ function activeBackend(): string {
 function backendReady(status: DashboardStatus | null): boolean {
   if (!status) return false;
   const backend = status.backend_provider || DEFAULT_BACKEND;
-  if (backend === OPENAI_BACKEND) return !!status.can_proceed_with_openai;
-  if (backend === GEMINI_BACKEND) return !!status.can_proceed_with_gemini;
   if (backend === LOCAL_BACKEND) return !!status.can_proceed_with_local;
   return !!status.can_proceed_with_hf;
 }
@@ -705,9 +697,6 @@ function renderBackendControls(): void {
     input.checked = input.value === backend;
     input.parentElement?.classList.toggle("is-selected", input.checked);
   });
-  const needsApiKey = backend === OPENAI_BACKEND || backend === GEMINI_BACKEND;
-  elements.apiKey.hidden = !needsApiKey;
-  elements.apiKey.placeholder = backend === GEMINI_BACKEND ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
   elements.hfFields.hidden = backend !== HF_BACKEND;
   elements.hfMode.value = state.status?.hf_connection_mode || "deployed";
   elements.hfHost.value = state.status?.hf_direct_host || "localhost";
@@ -717,9 +706,6 @@ function renderBackendControls(): void {
 async function saveBackend(): Promise<void> {
   const backend = backendInputs().find((input) => input.checked)?.value || DEFAULT_BACKEND;
   const body: Record<string, string | number> = { backend };
-  if (backend === OPENAI_BACKEND || backend === GEMINI_BACKEND) {
-    if (elements.apiKey.value.trim()) body.api_key = elements.apiKey.value.trim();
-  }
   if (backend === HF_BACKEND) {
     body.hf_mode = elements.hfMode.value;
     body.hf_host = elements.hfHost.value.trim();
@@ -733,24 +719,23 @@ async function saveBackend(): Promise<void> {
       body: JSON.stringify(body),
     });
     setStatus(elements.backendStatus, "Saved. Refreshing status...", "ok");
-    elements.apiKey.value = "";
     await loadDashboardStatus();
   } catch (error) {
     setStatus(elements.backendStatus, error instanceof Error ? error.message : "Failed to save.", "error");
   }
 }
 
-async function loadPersonalities(): Promise<void> {
-  let list: PersonalityList;
+async function loadProfiles(): Promise<void> {
+  let list: ProfileList;
   try {
-    list = await fetchJson<PersonalityList>("/personalities");
+    list = await fetchJson<ProfileList>("/profiles");
   } catch {
-    elements.personalitySelect.innerHTML = '<option value="">Personality routes starting...</option>';
-    setStatus(elements.personalityStatus, "Personality controls become available after the conversation loop starts.", "warn");
+    elements.profileSelect.innerHTML = '<option value="">Profile routes starting...</option>';
+    setStatus(elements.profileStatus, "Profile controls become available after the conversation loop starts.", "warn");
     return;
   }
 
-  elements.personalitySelect.replaceChildren(
+  elements.profileSelect.replaceChildren(
     ...list.choices.map((name) => {
       const option = document.createElement("option");
       option.value = name;
@@ -758,22 +743,22 @@ async function loadPersonalities(): Promise<void> {
       return option;
     }),
   );
-  elements.personalitySelect.value = list.choices.includes(list.startup) ? list.startup : list.current;
-  await loadSelectedPersonality();
+  elements.profileSelect.value = list.choices.includes(list.startup) ? list.startup : list.current;
+  await loadSelectedProfile();
 }
 
-async function loadSelectedPersonality(): Promise<void> {
-  const name = elements.personalitySelect.value;
+async function loadSelectedProfile(): Promise<void> {
+  const name = elements.profileSelect.value;
   if (!name) return;
-  const url = new URL("/personalities/load", window.location.origin);
+  const url = new URL("/profiles/load", window.location.origin);
   url.searchParams.set("name", name);
-  const data = await fetchJson<PersonalityPayload>(url.toString());
+  const data = await fetchJson<ProfilePayload>(url.toString());
   elements.instructions.value = data.instructions || "";
   elements.toolsText.value = data.tools_text || "";
-  elements.personalityName.value = name.includes("/") ? name.split("/").pop() || "" : "";
+  elements.profileName.value = name;
   renderToolCheckboxes(data.available_tools || [], data.enabled_tools || []);
   await loadVoices(data.voice);
-  setStatus(elements.personalityStatus, `Loaded ${name}.`);
+  setStatus(elements.profileStatus, `Loaded ${name}.`);
 }
 
 async function loadVoices(preferred: string): Promise<void> {
@@ -827,29 +812,29 @@ function syncToolsFromCheckboxes(): void {
   elements.toolsText.value = `${comments.length ? `${comments.join("\n")}\n` : ""}${Array.from(selected).sort().join("\n")}\n`;
 }
 
-async function applyPersonality(persist: boolean): Promise<void> {
-  const url = new URL("/personalities/apply", window.location.origin);
-  url.searchParams.set("name", elements.personalitySelect.value || "");
+async function applyProfile(persist: boolean): Promise<void> {
+  const url = new URL("/profiles/apply", window.location.origin);
+  url.searchParams.set("name", elements.profileSelect.value || "");
   if (persist) url.searchParams.set("persist", "1");
-  setStatus(elements.personalityStatus, persist ? "Saving startup personality..." : "Applying...");
+  setStatus(elements.profileStatus, persist ? "Saving startup profile..." : "Applying...");
   try {
     const result = await fetchJson<{ status?: string }>(url.toString(), { method: "POST" });
-    setStatus(elements.personalityStatus, result.status || "Applied.", "ok");
+    setStatus(elements.profileStatus, result.status || "Applied.", "ok");
   } catch (error) {
-    setStatus(elements.personalityStatus, error instanceof Error ? error.message : "Failed.", "error");
+    setStatus(elements.profileStatus, error instanceof Error ? error.message : "Failed.", "error");
   }
 }
 
-async function savePersonality(): Promise<void> {
-  const name = elements.personalityName.value.trim();
+async function saveProfile(overwrite = false): Promise<void> {
+  const name = elements.profileName.value.trim();
   if (!name) {
-    setStatus(elements.personalityStatus, "Enter a profile name.", "warn");
+    setStatus(elements.profileStatus, "Enter a profile name.", "warn");
     return;
   }
   syncToolsFromCheckboxes();
-  setStatus(elements.personalityStatus, "Saving...");
+  setStatus(elements.profileStatus, overwrite ? "Overwriting..." : "Saving...");
   try {
-    const result = await fetchJson<{ value: string; choices: string[] }>("/personalities/save", {
+    const result = await fetchJson<{ profile: string; choices: string[] }>("/profiles/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -857,9 +842,10 @@ async function savePersonality(): Promise<void> {
         instructions: elements.instructions.value,
         tools_text: elements.toolsText.value,
         voice: elements.voiceSelect.value,
+        overwrite,
       }),
     });
-    elements.personalitySelect.replaceChildren(
+    elements.profileSelect.replaceChildren(
       ...result.choices.map((choice) => {
         const option = document.createElement("option");
         option.value = choice;
@@ -867,10 +853,10 @@ async function savePersonality(): Promise<void> {
         return option;
       }),
     );
-    elements.personalitySelect.value = result.value;
-    setStatus(elements.personalityStatus, "Saved.", "ok");
+    elements.profileSelect.value = result.profile;
+    setStatus(elements.profileStatus, overwrite ? "Overwritten. Restart to apply tool changes." : "Saved. Restart to apply tool changes.", "ok");
   } catch (error) {
-    setStatus(elements.personalityStatus, error instanceof Error ? error.message : "Failed to save.", "error");
+    setStatus(elements.profileStatus, error instanceof Error ? error.message : "Failed to save.", "error");
   }
 }
 
@@ -879,23 +865,23 @@ async function applyVoice(): Promise<void> {
   if (!voice) return;
   const url = new URL("/voices/apply", window.location.origin);
   url.searchParams.set("voice", voice);
-  setStatus(elements.personalityStatus, "Applying voice...");
+  setStatus(elements.profileStatus, "Applying voice...");
   try {
     const result = await fetchJson<{ status?: string }>(url.toString(), { method: "POST" });
-    setStatus(elements.personalityStatus, result.status || `Voice changed to ${voice}.`, "ok");
+    setStatus(elements.profileStatus, result.status || `Voice changed to ${voice}.`, "ok");
   } catch (error) {
-    setStatus(elements.personalityStatus, error instanceof Error ? error.message : "Failed to apply voice.", "error");
+    setStatus(elements.profileStatus, error instanceof Error ? error.message : "Failed to apply voice.", "error");
   }
 }
 
-function newPersonality(): void {
-  elements.personalityName.value = "";
+function newProfile(): void {
+  elements.profileName.value = "";
   elements.instructions.value = "# Write your instructions here\n";
   elements.toolsText.value = "# tools enabled for this profile\n";
   elements.toolsAvailable.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {
     input.checked = false;
   });
-  setStatus(elements.personalityStatus, "Fill fields and save.");
+  setStatus(elements.profileStatus, "Fill fields and save.");
 }
 
 function entryLevel(entry: LogEntry): string {
@@ -1097,12 +1083,13 @@ function wireEvents(): void {
   elements.refreshFaceState.addEventListener("click", () => void loadFaceState());
   elements.saveFace.addEventListener("click", () => void saveSelectedFace());
   elements.saveBackend.addEventListener("click", () => void saveBackend());
-  elements.personalitySelect.addEventListener("change", () => void loadSelectedPersonality());
-  elements.applyPersonality.addEventListener("click", () => void applyPersonality(false));
-  elements.persistPersonality.addEventListener("click", () => void applyPersonality(true));
+  elements.profileSelect.addEventListener("change", () => void loadSelectedProfile());
+  elements.applyProfile.addEventListener("click", () => void applyProfile(false));
+  elements.persistProfile.addEventListener("click", () => void applyProfile(true));
   elements.applyVoice.addEventListener("click", () => void applyVoice());
-  elements.newPersonality.addEventListener("click", newPersonality);
-  elements.savePersonality.addEventListener("click", () => void savePersonality());
+  elements.newProfile.addEventListener("click", newProfile);
+  elements.saveProfile.addEventListener("click", () => void saveProfile(false));
+  elements.overwriteProfile.addEventListener("click", () => void saveProfile(true));
   backendInputs().forEach((input) => {
     input.addEventListener("change", renderBackendControls);
   });
@@ -1161,7 +1148,7 @@ async function init(): Promise<void> {
   connectLogs();
   await loadDashboardStatus().catch(() => addLocalLog("Dashboard status unavailable", "WARNING"));
   await loadFaceState().catch(() => addLocalLog("Face state unavailable", "WARNING", "VISION"));
-  await loadPersonalities();
+  await loadProfiles();
   renderLogs();
   refreshFrame();
   window.setInterval(() => void loadProcessStatus().then((available) => {

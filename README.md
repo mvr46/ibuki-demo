@@ -30,22 +30,18 @@ Conversational app for the Reachy Mini robot combining realtime voice backends, 
 - [License](#license)
 
 ## Overview
-- Real-time audio conversation loop with `fastrtc` for low-latency streaming. Supported backends:
-  - **Hugging Face** - default, using the built-in Hugging Face server or your own local endpoint.
-  - **Local Mac** - local-first STT/LLM/TTS path using MLX Whisper, Ollama, and required Piper voice output.
-  - **OpenAI Realtime** (`gpt-realtime-2`) - requires `OPENAI_API_KEY`.
-  - **Gemini Live** (`gemini-3.1-flash-live-preview`) - requires `GEMINI_API_KEY`.
+- Real-time audio conversation loop over the Reachy Mini media pipeline. Supported production backends:
+  - **Local Mac** - default local-first STT/LLM/TTS path using MLX Whisper, Ollama Gemma, Qwen tool routing, and required Piper voice output.
+  - **Hugging Face** - fallback backend, using the built-in Hugging Face server or your own local endpoint.
 - Vision processing uses the selected realtime backend by default (when the camera tool is used), with optional on-device local vision using SmolVLM2 (CPU/GPU/MPS) via `--local-vision`.
 - Layered motion system queues primary moves (dances, emotions, goto poses, breathing) while blending speech-reactive wobble and head-tracking.
-- Async tool dispatch integrates robot motion, camera capture, and optional head-tracking capabilities through a Gradio web UI with live transcripts.
+- Static production dashboard handles backend selection, profile editing, face naming, diagnostics, and logs.
+
+OpenAI Realtime and Gemini Live remain in the codebase as legacy adapters with deprecation warnings. They are hidden from the production dashboard and docs path.
 
 ## Architecture
 
-The app follows a layered architecture connecting the user, AI services, and robot hardware:
-
-<p align="center">
-  <img src="docs/assets/conversation_app_arch.svg" alt="Architecture Diagram" width="600"/>
-</p>
+The app follows a layered architecture connecting the user, local/Hugging Face AI services, tool registry, and robot hardware. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current diagram and startup notes.
 
 ## Installation
 
@@ -125,16 +121,19 @@ Some wheels (like PyTorch) are large and require compatible CUDA or CPU builds�
 
 ## Configuration
 
-The default setup uses the Hugging Face backend and does not require an API key.
+The default setup uses the local backend. For the optimized Mac mini wired setup, install a Piper voice and pull the local Ollama models:
 
-Copy `.env.example` to `.env` when you want to switch backends, provide API keys, or point Hugging Face at your own local endpoint.
+```bash
+ollama pull gemma3
+ollama pull qwen3.5:4b
+uv run python -m piper.download_voices --download-dir ./cache/piper-voices en_US-lessac-medium
+```
+
+Copy `.env.example` to `.env` when you want to switch to Hugging Face fallback, point Hugging Face at your own endpoint, or customize local model paths.
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | Required for OpenAI Realtime mode. |
-| `GEMINI_API_KEY` | Required for Gemini mode. Also accepts `GOOGLE_API_KEY`. Get one at [aistudio.google.com](https://aistudio.google.com/apikey). |
-| `BACKEND_PROVIDER` | Realtime backend to use: `huggingface` (default), `local`, `openai`, or `gemini`. |
-| `MODEL_NAME` | Optional model override for OpenAI Realtime or Gemini Live. Defaults to `gpt-realtime-2` for OpenAI and `gemini-3.1-flash-live-preview` for Gemini. Hugging Face uses the server's model selection. |
+| `BACKEND_PROVIDER` | Production backend to use: `local` (default) or `huggingface`. |
 | `HF_REALTIME_CONNECTION_MODE` | Hugging Face connection selector: `deployed` uses the built-in Hugging Face server; `local` uses `HF_REALTIME_WS_URL`. Defaults to `deployed`. |
 | `HF_REALTIME_WS_URL` | Direct websocket endpoint for your own Hugging Face backend. Accepts either a base URL like `ws://127.0.0.1:8765/v1` or the full websocket URL `ws://127.0.0.1:8765/v1/realtime`. Used when `HF_REALTIME_CONNECTION_MODE=local`. |
 | `HF_HOME` | Cache directory for local Hugging Face downloads (only used with `--local-vision` flag, defaults to `./cache`). |
@@ -142,14 +141,14 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 | `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
 | `REACHY_MEDIA_HOST` | Optional media signaling override. Set to `10.42.0.2` for the direct Mac mini ↔ Reachy Mini wired link. |
 | `OLLAMA_BASE_URL` | Local Ollama URL for the `local` backend and Ollama vision, defaults to `http://127.0.0.1:11434`. |
-| `OLLAMA_MODEL` | Ollama model for local chat/vision, defaults to `gemma3:4b`. Run `ollama pull gemma3:4b` before using the optimized local backend. |
+| `OLLAMA_MODEL` | Ollama model for local chat/vision, defaults to `gemma3:latest`. Run `ollama pull gemma3` before using the optimized local backend. |
 | `OLLAMA_ROUTER_MODEL` | Compact Ollama model for local tool routing, defaults to `qwen3.5:4b`. Run `ollama pull qwen3.5:4b` for local robot tools. |
 | `LOCAL_STT_MODEL` | MLX Whisper model for local STT, defaults to `mlx-community/whisper-small-mlx`. |
-| `PIPER_VOICE` | Required Piper `.onnx` voice model path for local TTS. The local backend will report an error instead of falling back to macOS `say` when this is missing. |
+| `PIPER_VOICE` | Required Piper `.onnx` voice model path for local TTS, for example `./cache/piper-voices/en_US-lessac-medium.onnx`. The local backend will report an error instead of falling back to macOS `say` when this is missing. |
 
 ### Hugging Face Connection Modes
 
-Use the built-in Hugging Face server through the app-managed Space proxy. This is the default for a new install; set it explicitly only when you want to switch back from a saved local endpoint:
+Use the built-in Hugging Face server through the app-managed Space proxy:
 
 ```env
 BACKEND_PROVIDER=huggingface
@@ -201,7 +200,7 @@ reachy-mini-conversation-app
 > [!TIP]
 > Make sure the Reachy Mini daemon is running before launching the app. If you see a `TimeoutError`, it means the daemon isn't started. See [Reachy Mini's SDK](https://github.com/pollen-robotics/reachy_mini/) for setup instructions.
 
-The app runs in console mode by default. Add `--gradio` to launch a web UI at http://127.0.0.1:7860/ (required for simulation mode). Vision and head-tracking options are described in the CLI table below.
+The app runs through the local robot audio stream. When launched as a Reachy Mini app, the static dashboard is served by the app settings server. Vision and head-tracking options are described in the CLI table below.
 
 ### CLI options
 
@@ -211,7 +210,6 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
 | `--media-backend {auto,default,local,webrtc,no_media}` | `auto` | Select the Reachy Mini SDK media backend. Use `no_media` for headless runs when camera/audio hardware is unavailable. In this app, `no_media` also disables camera, head tracking, and local vision. |
 | `--local-vision` | `False` | Use the local vision model (SmolVLM2) for camera-tool requests instead of the selected realtime backend. Requires `local_vision` extra to be installed. |
-| `--gradio` | `False` | Launch the Gradio web UI. Without this flag, runs in console mode. Required when running in simulation mode. |
 | `--connection-mode {auto,localhost_only,network}` | `network` | Select how the Reachy Mini SDK connects to the daemon. Defaults to `network` so camera/audio media streams come from the robot daemon. Use `localhost_only` for local development daemons. |
 | `--robot-host HOST` | `None` | Reachy Mini daemon hostname or IP address when using `--connection-mode network`. |
 | `--robot-port PORT` | `None` | Reachy Mini daemon port. Uses the SDK default when omitted. |
@@ -232,9 +230,10 @@ reachy-mini-conversation-app --head-tracker yolo
 reachy-mini-conversation-app --robot-host <robot-ip-or-hostname> --head-tracker yolo
 
 # Optimized wired Mac mini setup
-ollama pull gemma3:4b
+ollama pull gemma3
 ollama pull qwen3.5:4b
-BACKEND_PROVIDER=local reachy-mini-conversation-app --hardware-profile mac-mini-wired --head-tracker yolo
+uv run python -m piper.download_voices --download-dir ./cache/piper-voices en_US-lessac-medium
+BACKEND_PROVIDER=local PIPER_VOICE=./cache/piper-voices/en_US-lessac-medium.onnx reachy-mini-conversation-app --hardware-profile mac-mini-wired --head-tracker yolo
 
 # Run with local vision processing (requires local_vision extra)
 reachy-mini-conversation-app --local-vision
@@ -245,8 +244,6 @@ reachy-mini-conversation-app --no-camera
 # Headless run when camera/audio hardware is unavailable
 reachy-mini-conversation-app --media-backend no_media
 
-# Launch with Gradio web interface
-reachy-mini-conversation-app --gradio
 ```
 
 > [!WARNING]
@@ -278,18 +275,15 @@ Create custom profiles with dedicated instructions and enabled tools.
 
 For normal usage, select a profile from the UI and save it for startup. That selection is persisted in `startup_settings.json`.
 
-If no startup settings have been saved yet, you can still seed startup from the environment with `REACHY_MINI_CUSTOM_PROFILE=<name>` to load `profiles/<name>/`. If neither is set, the `default` profile is used.
+If no startup settings have been saved yet, you can still seed startup from the environment with `REACHY_MINI_CUSTOM_PROFILE=<name>` to load `src/reachy_mini_conversation_app/profiles/<name>/`. If neither is set, the `default` profile is used.
 
-Each profile should include `instructions.txt` (prompt text). `tools.txt` (list of allowed tools) is recommended. If missing for a non-default profile, the app falls back to `profiles/default/tools.txt`. Profiles can optionally contain custom tool implementations.
+Each profile should include:
 
-**Custom instructions:**
+- `instructions.txt`: the production prompt text.
+- `tools.txt`: enabled core tool names, one per line.
+- `voice.txt`: optional backend voice preference.
 
-Write plain-text prompts in `instructions.txt`. To reuse shared prompt pieces, add lines like:
-```
-[passion_for_lobster_jokes]
-[identities/witty_identity]
-```
-Each placeholder pulls the matching file under `src/reachy_mini_conversation_app/prompts/` (nested paths allowed). See `profiles/example/` for a reference layout.
+Profiles do not load Python files and there is no external tool autoloading in the production path. Tool implementations live under `src/reachy_mini_conversation_app/tools/`; profiles only select which core tools are exposed.
 
 **Enabling tools:**
 
@@ -297,83 +291,27 @@ List enabled tools in `tools.txt`, one per line. Prefix with `#` to comment out:
 ```
 play_emotion
 # move_head
-
-# My custom tool defined locally
-sweep_look
 ```
-Tools are resolved first from Python files in the profile folder (custom tools), then from the core library `src/reachy_mini_conversation_app/tools/` (like `dance`, `head_tracking`).
 
-**Custom tools:**
+**Edit profiles from the dashboard:**
 
-On top of built-in tools found in the core library, you can implement custom tools specific to your profile by adding Python files in the profile folder.
-Custom tools must subclass `reachy_mini_conversation_app.tools.core_tools.Tool` (see `profiles/example/sweep_look.py`).
+The production dashboard can list profiles, load a profile, save a new profile, overwrite the selected profile, apply the current profile, and apply voice changes.
 
-**Edit personalities from the UI:**
+Prompt and voice changes apply live. Tool-list changes are saved to `tools.txt` and take effect after restart.
 
-When running with `--gradio`, open the "Personality" accordion:
-- Select among available profiles (folders under `profiles/`) or the built‑in default.
-- Click "Apply" to update the current session instructions live.
-- Create a new personality by entering a name and instructions text. It stores files under `profiles/<name>/` and copies `tools.txt` from the `default` profile.
-
-Note: The "Personality" panel updates the conversation instructions. Tool sets are loaded at startup from `tools.txt` and are not hot‑reloaded.
+For the local backend, the dashboard voice is the logical `local` session voice. The audible speaker is the Piper model file selected with `PIPER_VOICE` when the app starts.
 
 </details>
 
 <details>
 <summary><b>Locked profile mode</b></summary>
 
-To create a locked variant of the app that cannot switch profiles, edit `src/reachy_mini_conversation_app/config.py` and set the `LOCKED_PROFILE` constant to the desired profile name:
+To create a locked variant of the app that cannot switch profiles, edit `src/reachy_mini_conversation_app/runtime/config.py` and set the `LOCKED_PROFILE` constant to the desired profile name:
 ```python
 LOCKED_PROFILE: str | None = "mars_rover"  # Lock to this profile
 ```
-When `LOCKED_PROFILE` is set, the app always uses that profile, ignoring saved startup settings, `REACHY_MINI_CUSTOM_PROFILE`, and the Gradio UI. The UI shows "(locked)" and disables all profile editing controls.
-This is useful for creating dedicated clones of the app with a fixed personality. Clone scripts can simply edit this constant to lock the variant.
-
-</details>
-
-<details>
-<summary><b>External profiles and tools</b></summary>
-
-You can extend the app with profiles/tools stored outside the repository defaults.
-
-- Core profiles are under `profiles/`.
-- Core tools are under `src/reachy_mini_conversation_app/tools/`.
-
-**Recommended layout:**
-
-```text
-external_content/
-├── external_profiles/
-│   └── my_profile/
-│       ├── instructions.txt
-│       ├── tools.txt        # optional (see fallback behavior below)
-│       └── voice.txt        # optional
-└── external_tools/
-    └── my_custom_tool.py
-```
-
-**Environment variables:**
-
-Set these values in your `.env` when you want env-driven external profile/tool selection:
-
-```env
-# Optional fallback/manual profile selector:
-REACHY_MINI_CUSTOM_PROFILE=my_profile
-REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY=./external_content/external_profiles
-REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY=./external_content/external_tools
-# Optional convenience mode:
-# AUTOLOAD_EXTERNAL_TOOLS=1
-```
-
-**Loading behavior:**
-
-- **Default/strict mode**: `tools.txt` defines enabled tools explicitly. Every name in `tools.txt` must resolve to either a built-in tool (`src/reachy_mini_conversation_app/tools/`) or an external tool module in `REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY`.
-- **Convenience mode** (`AUTOLOAD_EXTERNAL_TOOLS=1`): all valid `*.py` tool files in `REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY` are auto-added.
-- **External profile fallback**: if the selected external profile has no `tools.txt`, the app falls back to built-in `profiles/default/tools.txt`.
-
-This supports both:
-1. Downloaded external tools used with built-in/default profile.
-2. Downloaded external profiles used with built-in default tools.
+When `LOCKED_PROFILE` is set, the app always uses that profile, ignoring saved startup settings, `REACHY_MINI_CUSTOM_PROFILE`, and dashboard profile switching. The UI shows "(locked)" and disables profile editing controls.
+This is useful for creating dedicated clones of the app with a fixed profile. Clone scripts can simply edit this constant to lock the variant.
 
 </details>
 

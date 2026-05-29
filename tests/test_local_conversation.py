@@ -5,11 +5,11 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from fastrtc import AdditionalOutputs
 
-from reachy_mini_conversation_app.local_llm import LocalLLMResponse, LocalToolRoutingResult
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-from reachy_mini_conversation_app.local_conversation import LocalConversationHandler
+from reachy_mini_conversation_app.runtime.streaming import AdditionalOutputs
+from reachy_mini_conversation_app.backends.local_llm import LocalLLMResponse, LocalToolRoutingResult
+from reachy_mini_conversation_app.backends.local_conversation import LocalConversationHandler
 
 
 class _FakeSTT:
@@ -40,6 +40,17 @@ class _FakeTTS:
     output_sample_rate = 24000
 
     async def synthesize(self, text: str) -> tuple[int, np.ndarray]:
+        return 24000, np.ones(2400, dtype=np.int16)
+
+
+class _CapturingTTS:
+    output_sample_rate = 24000
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def synthesize(self, text: str) -> tuple[int, np.ndarray]:
+        self.texts.append(text)
         return 24000, np.ones(2400, dtype=np.int16)
 
 
@@ -103,7 +114,7 @@ async def test_local_conversation_attaches_tools_for_robot_action_turn() -> None
         return {"status": "looking_at", "name": "Matt"}
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("reachy_mini_conversation_app.local_conversation.dispatch_tool_call", fake_dispatch)
+        monkeypatch.setattr("reachy_mini_conversation_app.backends.local_conversation.dispatch_tool_call", fake_dispatch)
         await handler._respond_to_current_messages()
 
     tool_output = await handler.output_queue.get()
@@ -147,3 +158,60 @@ async def test_rejected_stt_transcript_never_becomes_user_message() -> None:
     assert handler.output_queue.empty()
     assert not any(message.get("role") == "user" for message in handler._messages)
     diagnostics.record_rejected_segment.assert_called_with(reason="repeated_character", source="stt")
+
+
+@pytest.mark.asyncio
+async def test_environment_messages_are_not_stored_as_user_turns() -> None:
+    """Ambient vision context should not look like user speech to routing/history."""
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+    )
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=_FakeLLM(),
+        tts_adapter=_FakeTTS(),
+    )
+
+    await handler.inject_environment_message("[Vision: Alice entered the frame (center)]")
+
+    assert handler._messages[-1] == {"role": "system", "content": "[Vision: Alice entered the frame (center)]"}
+    assert not any(message["role"] == "user" for message in handler._messages)
+
+
+@pytest.mark.asyncio
+async def test_local_conversation_strips_echoed_ambient_context_before_speaking() -> None:
+    """The robot should not read model-echoed Vision/Speech tags aloud."""
+
+    class EchoingLLM:
+        async def chat(self, messages: list[dict[str, object]], tools: list[dict[str, object]]) -> LocalLLMResponse:
+            return LocalLLMResponse(
+                content="[Vision: Alice entered the frame (center)] Hello Alice, nice to see you.",
+                tool_calls=[],
+            )
+
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+    )
+    tts = _CapturingTTS()
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=EchoingLLM(),
+        tts_adapter=tts,
+    )
+    handler._messages.append({"role": "system", "content": "[Vision: Alice entered the frame (center)]"})
+    handler._messages.append({"role": "user", "content": "hi"})
+
+    await handler._respond_to_current_messages()
+
+    assistant_output = await handler.output_queue.get()
+    audio_output = await handler.output_queue.get()
+
+    assert isinstance(assistant_output, AdditionalOutputs)
+    assert assistant_output.args[0]["content"] == "Hello Alice, nice to see you."
+    assert tts.texts == ["Hello Alice, nice to see you."]
+    assert handler._messages[-1]["content"] == "Hello Alice, nice to see you."
+    assert isinstance(audio_output, tuple)

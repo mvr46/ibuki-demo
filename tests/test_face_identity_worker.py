@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from reachy_mini_conversation_app.face_identity_worker import FaceIdentifierWorker
 from reachy_mini_conversation_app.vision.face_identity import FaceObservation, IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
+from reachy_mini_conversation_app.vision.face_identity_worker import FaceIdentifierWorker
 
 
 class _FakeIdentifier:

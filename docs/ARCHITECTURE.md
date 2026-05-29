@@ -4,15 +4,15 @@
 
 The app is a realtime conversation bridge between four domains:
 
-- Audio/UI streaming through FastRTC and optional Gradio UI.
+- Audio streaming through the Reachy Mini media pipeline and `LocalStream`.
 - AI realtime backends that produce speech, transcripts, and function calls.
 - Robot capabilities through the Reachy Mini SDK.
 - Local side systems such as camera capture, face tracking, local vision, motion blending, and background tool execution.
 
 ```mermaid
 flowchart LR
-    User["User audio"] --> FastRTC["FastRTC Stream"]
-    FastRTC --> Handler["ConversationHandler"]
+    User["User audio"] --> LocalStream["LocalStream"]
+    LocalStream --> Handler["ConversationHandler"]
     Handler --> Backend["Realtime backend"]
     Backend --> Handler
     Handler --> ToolDispatch["Tool dispatch"]
@@ -22,8 +22,8 @@ flowchart LR
     Tools --> Vision["Vision processor or backend vision"]
     Motion --> Robot["Reachy Mini SDK"]
     Camera --> Robot
-    Handler --> FastRTC
-    FastRTC --> UserOut["Assistant audio + transcripts"]
+    Handler --> LocalStream
+    LocalStream --> UserOut["Assistant audio + transcripts"]
 ```
 
 ## Startup composition
@@ -33,16 +33,28 @@ flowchart LR
 Key startup decisions:
 
 - `ReachyMini` is created unless a robot object is injected by the hosting app.
-- Simulation mode automatically enables Gradio.
 - `initialize_camera_and_vision()` creates `CameraWorker`, optional head tracker, and optional local vision processor.
 - `MovementManager` receives the robot and camera worker.
 - `HeadWobbler` feeds speech-reactive offsets into the movement manager.
 - `ToolDependencies` is passed into the selected realtime handler.
-- The selected handler is mounted in either console mode or Gradio/FastAPI mode.
+- The selected handler is mounted in the local robot audio stream. The FastAPI settings app serves the static production dashboard when available.
+
+## Package layout
+
+The package keeps `main.py` at the app root because it is the composition entry point. Other Python modules live in domain folders:
+
+- `backends/`: local, Hugging Face, and legacy realtime adapters plus the shared backend interface.
+- `runtime/`: settings, dashboard routes, diagnostics, app console orchestration, transport, and streaming helpers.
+- `profiles/`: repo-backed profile store, profile routes, prompt include expansion, and bundled production profiles.
+- `tools/`: core robot tool implementations and the explicit `ToolRegistry`.
+- `motion/`: movement manager and bundled motion/emotion helpers.
+- `vision/`: camera workers, local vision, frame encoding, face identity, speaker attribution, and perception stream helpers.
+
+This layout is meant to make production paths obvious: backend selection, profile loading, tool loading, motion, and vision each have a single local neighborhood.
 
 ## Backend layer
 
-The shared contract is `ConversationHandler` in `conversation_handler.py`. All handlers must provide lifecycle, audio receive/emit, personality, and voice methods.
+The shared contract is `ConversationHandler` in `backends/interface.py`. All handlers must provide lifecycle, audio receive/emit, profile, and voice methods.
 
 `BaseRealtimeHandler` implements the common OpenAI-compatible behavior:
 
@@ -56,7 +68,7 @@ The shared contract is `ConversationHandler` in `conversation_handler.py`. All h
 - cost tracking
 - voice switching
 
-OpenAI and Hugging Face mostly provide backend-specific session config and client creation. Gemini has a separate handler because the Gemini Live SDK has different session/event semantics.
+Local and Hugging Face are the production backends. OpenAI and Gemini remain legacy adapters and log deprecation warnings when used.
 
 ## Tool system
 
@@ -67,7 +79,7 @@ Tools are subclasses of `Tool` in `tools/core_tools.py`. Each tool provides:
 - `parameters_schema`
 - async `__call__(deps, **kwargs)`
 
-At import time, `core_tools` loads the selected profile's `tools.txt`, imports profile-local tools first, then shared tools from `reachy_mini_conversation_app.tools`, and finally optional external tools.
+At startup, `ToolRegistry` reads the active profile's `tools.txt` and imports only matching core tool modules from `reachy_mini_conversation_app.tools`. Profile-local Python tools and external tool autoloading are not part of the production path.
 
 Tool dispatch accepts model-provided JSON arguments, parses them defensively, and invokes the registered tool with `ToolDependencies`. This keeps hardware and runtime services explicit:
 
@@ -104,18 +116,10 @@ Vision for the `camera` tool can run in two ways:
 
 ## Profiles and prompts
 
-Profiles are personality/runtime bundles. A profile can define:
+Profiles are prompt/runtime bundles. A profile can define:
 
 - `instructions.txt`: prompt content.
 - `tools.txt`: tool names to expose.
 - `voice.txt`: optional backend voice preference.
-- `<tool_name>.py`: optional profile-local tool implementation.
 
-Prompt files can include shared prompt fragments with lines like:
-
-```text
-[identities/basic_info]
-```
-
-`prompts.py` expands those includes from `src/reachy_mini_conversation_app/prompts/`.
-
+Profiles live under `src/reachy_mini_conversation_app/profiles/` and are managed through `ProfileStore`.

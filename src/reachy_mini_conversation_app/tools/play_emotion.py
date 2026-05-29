@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # Initialize emotion library
 try:
     from reachy_mini.motion.recorded_move import RecordedMoves
-    from reachy_mini_conversation_app.dance_emotion_moves import EmotionQueueMove
+    from reachy_mini_conversation_app.motion.dance_emotion_moves import EmotionQueueMove
 
     # Note: huggingface_hub automatically reads HF_TOKEN from environment variables
     RECORDED_MOVES = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")

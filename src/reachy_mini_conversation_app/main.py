@@ -6,28 +6,19 @@ import time
 import asyncio
 import argparse
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Optional
 from pathlib import Path
 
-import gradio as gr
 from fastapi import FastAPI
-from fastrtc import Stream
-from gradio.utils import get_space
 
 from reachy_mini import ReachyMini, ReachyMiniApp
-from reachy_mini_conversation_app.utils import (
+from reachy_mini_conversation_app.runtime.utils import (
     CameraVisionInitializationError,
     parse_args,
     setup_logger,
     initialize_camera_and_vision,
     log_connection_troubleshooting,
 )
-
-
-def update_chatbot(chatbot: List[Dict[str, Any]], response: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Update the chatbot with AdditionalOutputs."""
-    chatbot.append(response)
-    return chatbot
 
 
 def _disable_broken_gstreamer_python_plugin() -> None:
@@ -49,8 +40,8 @@ def _install_network_media_host_fallback() -> None:
     from reachy_mini.daemon.utils import is_local_camera_available
     from reachy_mini.media.media_manager import MediaBackend, MediaManager
     from reachy_mini.media.camera_constants import get_camera_specs_by_name
-    from reachy_mini_conversation_app.config import config
-    from reachy_mini_conversation_app.transport import resolve_transport
+    from reachy_mini_conversation_app.runtime.config import config
+    from reachy_mini_conversation_app.runtime.transport import resolve_transport
 
     def _configure_mediamanager_with_host_fallback(
         self: ReachyMini,
@@ -172,22 +163,18 @@ def run(
 ) -> None:
     """Run the Reachy Mini conversation app."""
     # Putting these dependencies here makes the dashboard faster to load when the conversation app is installed
-    from reachy_mini_conversation_app.moves import MovementManager
-    from reachy_mini_conversation_app.config import (
+    from reachy_mini_conversation_app.motion.moves import MovementManager
+    from reachy_mini_conversation_app.runtime.config import (
         HF_BACKEND,
         LOCAL_BACKEND,
-        GEMINI_BACKEND,
-        OPENAI_BACKEND,
-        HF_LOCAL_CONNECTION_MODE,
         config,
-        is_gemini_model,
         get_backend_label,
         get_hf_connection_selection,
         refresh_runtime_config_from_env,
     )
-    from reachy_mini_conversation_app.transport import measure_http_rtt_ms, default_robot_host_for_profile
-    from reachy_mini_conversation_app.diagnostics import PerformanceDiagnostics
-    from reachy_mini_conversation_app.startup_settings import (
+    from reachy_mini_conversation_app.runtime.transport import measure_http_rtt_ms, default_robot_host_for_profile
+    from reachy_mini_conversation_app.runtime.diagnostics import PerformanceDiagnostics
+    from reachy_mini_conversation_app.runtime.startup_settings import (
         StartupSettings,
         load_startup_settings_into_runtime,
     )
@@ -229,18 +216,15 @@ def run(
             config.MODEL_NAME,
         )
 
-    from reachy_mini_conversation_app.console import LocalStream
-    from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
+    from reachy_mini_conversation_app.runtime.console import LocalStream
+    from reachy_mini_conversation_app.tools.core_tools import ToolRegistry, ToolDependencies
     from reachy_mini_conversation_app.audio.head_wobbler import HeadWobbler
-    from reachy_mini_conversation_app.conversation_handler import ConversationHandler
+    from reachy_mini_conversation_app.backends.interface import ConversationHandler
 
     if args.media_backend == "no_media":
         if not args.no_camera:
             logger.warning("Media backend no_media selected; disabling camera capture.")
             args.no_camera = True
-        if not args.gradio:
-            logger.info("Media backend no_media selected; enabling Gradio for browser audio.")
-            args.gradio = True
         if args.head_tracker is not None:
             logger.warning("Head tracking disabled: --media-backend no_media was selected.")
             args.head_tracker = None
@@ -302,26 +286,12 @@ def run(
             logger.error("Please check your configuration and try again.")
             sys.exit(1)
 
-    # Auto-enable Gradio in simulation mode (both MuJoCo for daemon and mockup-sim for desktop app)
     status = robot.client.get_status()
     diagnostics.set_daemon(
         rtt_ms=measure_http_rtt_ms(f"http://{getattr(robot.client, 'host', 'localhost')}:{getattr(robot.client, 'port', 8000)}/api/daemon/status"),
         state=(status.get("state") if isinstance(status, dict) else getattr(status, "state", None)),
     )
-    if isinstance(status, dict):
-        simulation_enabled = status.get("simulation_enabled", False)
-        mockup_sim_enabled = status.get("mockup_sim_enabled", False)
-    else:
-        simulation_enabled = getattr(status, "simulation_enabled", False)
-        mockup_sim_enabled = getattr(status, "mockup_sim_enabled", False)
-
-    is_simulation = simulation_enabled or mockup_sim_enabled
-
-    if is_simulation and not args.gradio:
-        logger.info("Simulation mode detected. Automatically enabling gradio flag.")
-        args.gradio = True
-
-    from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
+    from reachy_mini_conversation_app.vision.speaker_attribution import SpeakerAttributionWorker
 
     spatial_audio_source = None
 
@@ -346,11 +316,11 @@ def run(
     face_identity_worker = None
     if camera_worker is not None and getattr(camera_worker, "head_tracker", None) is not None:
         try:
-            from reachy_mini_conversation_app.face_identity_worker import FaceIdentifierWorker
             from reachy_mini_conversation_app.vision.face_identity import (
                 build_default_face_identity_service,
                 build_detection_only_face_identity_service,
             )
+            from reachy_mini_conversation_app.vision.face_identity_worker import FaceIdentifierWorker
 
             try:
                 face_identity_service = build_default_face_identity_service()
@@ -393,6 +363,7 @@ def run(
         head_wobbler=head_wobbler,
         performance_diagnostics=diagnostics,
     )
+    deps.tool_registry = ToolRegistry.from_active_profile()
     if config.BACKEND_PROVIDER == LOCAL_BACKEND:
         from reachy_mini_conversation_app.vision.analyzers import build_default_vision_analyzer
 
@@ -400,122 +371,20 @@ def run(
             vision_processor,
             diagnostics=diagnostics,
         )
-    current_file_path = os.path.dirname(os.path.abspath(__file__))
-    logger.debug(f"Current file absolute path: {current_file_path}")
-    chatbot = gr.Chatbot(
-        type="messages",
-        resizable=True,
-        avatar_images=(
-            os.path.join(current_file_path, "images", "user_avatar.png"),
-            os.path.join(current_file_path, "images", "reachymini_avatar.png"),
-        ),
+    from reachy_mini_conversation_app.backends.factory import create_conversation_handler
+
+    handler: ConversationHandler = create_conversation_handler(
+        deps,
+        instance_path=instance_path,
+        startup_voice=startup_settings.voice,
     )
-    logger.debug(f"Chatbot avatar images: {chatbot.avatar_images}")
 
-    handler: ConversationHandler
-    if config.BACKEND_PROVIDER == LOCAL_BACKEND:
-        from reachy_mini_conversation_app.local_conversation import LocalConversationHandler
-
-        logger.info("Using %s via LocalConversationHandler", get_backend_label(config.BACKEND_PROVIDER))
-        handler = LocalConversationHandler(
-            deps,
-            gradio_mode=args.gradio,
-            instance_path=instance_path,
-            startup_voice=startup_settings.voice,
-        )
-    elif is_gemini_model():
-        from reachy_mini_conversation_app.gemini_live import GeminiLiveHandler
-
-        logger.info(
-            "Using %s via GeminiLiveHandler",
-            get_backend_label(config.BACKEND_PROVIDER),
-        )
-        handler = GeminiLiveHandler(
-            deps,
-            gradio_mode=args.gradio,
-            instance_path=instance_path,
-            startup_voice=startup_settings.voice,
-        )
-    elif config.BACKEND_PROVIDER == HF_BACKEND:
-        from reachy_mini_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
-
-        hf_connection_selection = get_hf_connection_selection()
-        transport_label = (
-            "Hugging Face direct websocket"
-            if hf_connection_selection.mode == HF_LOCAL_CONNECTION_MODE and hf_connection_selection.has_target
-            else "Hugging Face session proxy"
-        )
-        logger.info(
-            "Using %s via Hugging Face realtime handler (%s)",
-            get_backend_label(config.BACKEND_PROVIDER),
-            transport_label,
-        )
-        handler = HuggingFaceRealtimeHandler(
-            deps,
-            gradio_mode=args.gradio,
-            instance_path=instance_path,
-            startup_voice=startup_settings.voice,
-        )
-    else:
-        from reachy_mini_conversation_app.openai_realtime import OpenaiRealtimeHandler
-
-        logger.info(
-            "Using %s via OpenAI realtime handler (OpenAI Realtime API)",
-            get_backend_label(config.BACKEND_PROVIDER),
-        )
-        handler = OpenaiRealtimeHandler(
-            deps,
-            gradio_mode=args.gradio,
-            instance_path=instance_path,
-            startup_voice=startup_settings.voice,
-        )
-
-    stream_manager: gr.Blocks | LocalStream | None = None
-
-    if args.gradio:
-        from reachy_mini_conversation_app.gradio_personality import PersonalityUI
-
-        personality_ui = PersonalityUI()
-        personality_ui.create_components()
-        additional_inputs: list[Any] = [chatbot, *personality_ui.additional_inputs_ordered()]
-
-        if config.BACKEND_PROVIDER in {OPENAI_BACKEND, GEMINI_BACKEND}:
-            uses_gemini_backend = is_gemini_model()
-            api_key_textbox = gr.Textbox(
-                label="GEMINI_API_KEY" if uses_gemini_backend else "OPENAI API Key",
-                type="password",
-                value=(os.getenv("GEMINI_API_KEY") if uses_gemini_backend else os.getenv("OPENAI_API_KEY"))
-                if not get_space()
-                else "",
-            )
-            additional_inputs.insert(1, api_key_textbox)
-
-        stream = Stream(
-            handler=handler,
-            mode="send-receive",
-            modality="audio",
-            additional_inputs=additional_inputs,
-            additional_outputs=[chatbot],
-            additional_outputs_handler=update_chatbot,
-            ui_args={"title": "Talk with Reachy Mini"},
-        )
-        stream_manager = stream.ui
-        if not settings_app:
-            app = FastAPI()
-        else:
-            app = settings_app
-
-        personality_ui.wire_events(handler, stream_manager)
-
-        app = gr.mount_gradio_app(app, stream.ui, path="/")
-    else:
-        # In headless mode, wire settings_app + instance_path to console LocalStream
-        stream_manager = LocalStream(
-            handler,
-            robot,
-            settings_app=settings_app,
-            instance_path=instance_path,
-        )
+    stream_manager = LocalStream(
+        handler,
+        robot,
+        settings_app=settings_app,
+        instance_path=instance_path,
+    )
 
     # Each async service → its own thread/loop
     movement_manager.start()

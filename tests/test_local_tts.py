@@ -3,7 +3,7 @@
 from __future__ import annotations
 from pathlib import Path
 
-from reachy_mini_conversation_app.local_tts import PiperTTSAdapter, piper_tts_status
+from reachy_mini_conversation_app.backends.local_tts import PiperTTSAdapter, piper_tts_status
 
 
 def test_piper_tts_does_not_fall_back_to_macos_say(monkeypatch) -> None:
@@ -32,8 +32,8 @@ def test_piper_tts_does_not_fall_back_to_macos_say(monkeypatch) -> None:
 
         return Proc()
 
-    monkeypatch.setattr("reachy_mini_conversation_app.local_tts.shutil.which", fake_which)
-    monkeypatch.setattr("reachy_mini_conversation_app.local_tts.subprocess.run", fake_run)
+    monkeypatch.setattr("reachy_mini_conversation_app.backends.local_tts.shutil.which", fake_which)
+    monkeypatch.setattr("reachy_mini_conversation_app.backends.local_tts.subprocess.run", fake_run)
 
     sample_rate, audio = PiperTTSAdapter(voice_model=None)._synthesize_sync("hello")
 
@@ -46,7 +46,7 @@ def test_piper_status_requires_voice_file(monkeypatch, tmp_path: Path) -> None:
     """Piper readiness should require both binary and a real voice model path."""
     voice = tmp_path / "voice.onnx"
     voice.write_bytes(b"voice")
-    monkeypatch.setattr("reachy_mini_conversation_app.local_tts.shutil.which", lambda name: "/usr/bin/piper")
+    monkeypatch.setattr("reachy_mini_conversation_app.backends.local_tts.shutil.which", lambda name: "/usr/bin/piper")
 
     ready = piper_tts_status(str(voice))
     missing = piper_tts_status(str(tmp_path / "missing.onnx"))

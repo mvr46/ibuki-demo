@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+cache/
 .pytest_cache/
 examples/*/.venv/
 examples/*/__pycache__/

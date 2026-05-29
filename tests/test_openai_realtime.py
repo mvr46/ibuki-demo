@@ -7,16 +7,15 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastrtc import AdditionalOutputs
 
-import reachy_mini_conversation_app.base_realtime as base_rt_mod
-import reachy_mini_conversation_app.openai_realtime as rt_mod
-import reachy_mini_conversation_app.tools.core_tools as ct_mod
+import reachy_mini_conversation_app.backends.base_realtime as base_rt_mod
+import reachy_mini_conversation_app.backends.openai_realtime as rt_mod
 import reachy_mini_conversation_app.tools.background_tool_manager as btm_mod
-from reachy_mini_conversation_app.config import OPENAI_BACKEND, config, get_default_voice_for_backend
-from reachy_mini_conversation_app.openai_realtime import OpenaiRealtimeHandler
+from reachy_mini_conversation_app.runtime.config import OPENAI_BACKEND, config, get_default_voice_for_backend
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-from reachy_mini_conversation_app.speaker_attribution import SpeakerAttributionWorker
+from reachy_mini_conversation_app.runtime.streaming import AdditionalOutputs
+from reachy_mini_conversation_app.backends.openai_realtime import OpenaiRealtimeHandler
+from reachy_mini_conversation_app.vision.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.tools.background_tool_manager import ToolCallRoutine
 
 
@@ -562,7 +561,7 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch: An
     """Applying a profile should not discard a voice manually selected in the current session."""
     monkeypatch.setattr(rt_mod, "get_session_instructions", lambda: "test")
     monkeypatch.setattr(rt_mod, "get_session_voice", lambda: "cedar")
-    monkeypatch.setattr("reachy_mini_conversation_app.config.set_custom_profile", lambda _profile: None)
+    monkeypatch.setattr("reachy_mini_conversation_app.runtime.config.set_custom_profile", lambda _profile: None)
 
     handler = OpenaiRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     update = AsyncMock()
@@ -573,7 +572,7 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch: An
 
     status = await handler.apply_personality("example")
 
-    assert status == "Applied personality and restarted realtime session."
+    assert status == "Applied profile and restarted realtime session."
     assert handler.get_current_voice() == "marin"
     restart.assert_awaited_once()
     session = update.await_args.kwargs["session"]
@@ -733,32 +732,6 @@ async def test_start_up_retries_on_abrupt_close(monkeypatch: Any, caplog: Any) -
     # Optional: confirm we logged the unexpected close once
     warnings = [r for r in caplog.records if r.levelname == "WARNING" and "closed unexpectedly" in r.msg]
     assert len(warnings) == 1
-
-
-@pytest.mark.asyncio
-async def test_start_up_openai_gradio_collects_textbox_api_key(monkeypatch: Any) -> None:
-    """OpenAI should own Gradio textbox credential collection."""
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
-    monkeypatch.setattr(config, "OPENAI_API_KEY", None)
-
-    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
-    handler = rt_mod.OpenaiRealtimeHandler(deps, gradio_mode=True)
-    handler.latest_args = ["profile", "voice", "unused", "sk-textbox-secret"]
-
-    build_client = AsyncMock(return_value=MagicMock())
-    run_realtime_session = AsyncMock(return_value=None)
-    wait_for_args = AsyncMock(return_value=None)
-
-    monkeypatch.setattr(handler, "_build_realtime_client", build_client)
-    monkeypatch.setattr(handler, "_run_realtime_session", run_realtime_session)
-    monkeypatch.setattr(handler, "wait_for_args", wait_for_args)
-
-    await handler.start_up()
-
-    wait_for_args.assert_awaited_once()
-    build_client.assert_awaited_once_with()
-    run_realtime_session.assert_awaited_once()
-    assert handler._provided_api_key == "sk-textbox-secret"
 
 
 @pytest.mark.asyncio
@@ -1354,16 +1327,6 @@ async def test_openai_excludes_head_tracking_when_no_head_tracker(monkeypatch: A
     monkeypatch.setattr(rt_mod, "get_session_instructions", lambda: "test")
     monkeypatch.setattr(rt_mod, "get_session_voice", lambda default=None: "alloy")
 
-    # mock ALL_TOOL_SPECS to include at least head_tracking and one other tool, to verify that only head_tracking is excluded, not all tools
-    monkeypatch.setattr(
-        ct_mod,
-        "ALL_TOOL_SPECS",
-        [
-            {"type": "function", "name": "head_tracking", "description": "head_tracking", "parameters": {}},
-            {"type": "function", "name": "fake_tool", "description": "fake_tool", "parameters": {}},
-        ],
-    )
-
     session_kwargs: dict = {}
 
     class FakeSession:
@@ -1429,7 +1392,7 @@ async def test_openai_excludes_head_tracking_when_no_head_tracker(monkeypatch: A
     session_tools = session_kwargs.get("session", {}).get("tools", [])
     tool_names = [t["name"] for t in session_tools]
     assert "head_tracking" not in tool_names, "case 1 failed: camera_worker=None"
-    assert "fake_tool" in tool_names, "case 1 failed: a non-head-tracking tool was unexpectedly excluded"
+    assert "move_head" in tool_names, "case 1 failed: a non-head-tracking tool was unexpectedly excluded"
 
     # case 2: camera is running but --head-tracker flag was not passed
     session_kwargs.clear()
@@ -1446,4 +1409,4 @@ async def test_openai_excludes_head_tracking_when_no_head_tracker(monkeypatch: A
     session_tools = session_kwargs.get("session", {}).get("tools", [])
     tool_names = [t["name"] for t in session_tools]
     assert "head_tracking" not in tool_names, "case 2 failed: camera_worker.head_tracker=None"
-    assert "fake_tool" in tool_names, "case 2 failed: a non-head-tracking tool was unexpectedly excluded"
+    assert "move_head" in tool_names, "case 2 failed: a non-head-tracking tool was unexpectedly excluded"

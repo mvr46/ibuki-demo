@@ -1,6 +1,5 @@
 """Tests for the headless console stream."""
 
-import sys
 import asyncio
 import threading
 from types import SimpleNamespace
@@ -15,14 +14,15 @@ from numpy.typing import NDArray
 from fastapi.testclient import TestClient
 
 from reachy_mini.media.media_manager import MediaBackend
-from reachy_mini_conversation_app.config import LOCAL_BACKEND, GEMINI_AVAILABLE_VOICES, config
-from reachy_mini_conversation_app.console import LOCAL_PLAYER_BACKEND, LocalStream
-from reachy_mini_conversation_app.diagnostics import PerformanceDiagnostics
-from reachy_mini_conversation_app.startup_settings import (
+from reachy_mini_conversation_app.profiles.store import ProfileStore
+from reachy_mini_conversation_app.runtime.config import LOCAL_BACKEND, config
+from reachy_mini_conversation_app.profiles.routes import mount_personality_routes
+from reachy_mini_conversation_app.runtime.console import LOCAL_PLAYER_BACKEND, LocalStream
+from reachy_mini_conversation_app.runtime.diagnostics import PerformanceDiagnostics
+from reachy_mini_conversation_app.runtime.startup_settings import (
     StartupSettings,
     load_startup_settings_into_runtime,
 )
-from reachy_mini_conversation_app.headless_personality_ui import mount_personality_routes
 
 
 def test_clear_audio_queue_prefers_clear_player_when_available() -> None:
@@ -94,11 +94,11 @@ def test_refresh_performance_health_marks_doa_deprecated_without_polling(monkeyp
             return {"timestamp": 1}
         return {}
 
-    monkeypatch.setattr("reachy_mini_conversation_app.console.measure_http_rtt_ms", lambda *args, **kwargs: 1.0)
-    monkeypatch.setattr("reachy_mini_conversation_app.console.probe_host", lambda *args, **kwargs: True)
-    monkeypatch.setattr("reachy_mini_conversation_app.console._fetch_json_dict", fake_fetch)
+    monkeypatch.setattr("reachy_mini_conversation_app.runtime.console.measure_http_rtt_ms", lambda *args, **kwargs: 1.0)
+    monkeypatch.setattr("reachy_mini_conversation_app.runtime.console.probe_host", lambda *args, **kwargs: True)
+    monkeypatch.setattr("reachy_mini_conversation_app.runtime.console._fetch_json_dict", fake_fetch)
     monkeypatch.setattr(
-        "reachy_mini_conversation_app.console._ollama_model_status",
+        "reachy_mini_conversation_app.runtime.console._ollama_model_status",
         lambda *args, **kwargs: {"configured_model": "qwen3.5:4b", "installed": True},
     )
 
@@ -116,7 +116,7 @@ def test_local_backend_requires_ready_piper_voice(monkeypatch: pytest.MonkeyPatc
     robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
     stream = LocalStream(handler, robot)
 
-    monkeypatch.setattr("reachy_mini_conversation_app.local_tts.shutil.which", lambda name: "/usr/bin/piper")
+    monkeypatch.setattr("reachy_mini_conversation_app.backends.local_tts.shutil.which", lambda name: "/usr/bin/piper")
     monkeypatch.setattr(config, "PIPER_VOICE", None)
 
     assert stream._has_required_key(LOCAL_BACKEND) is False
@@ -173,19 +173,13 @@ async def test_play_loop_feeds_head_wobbler_with_local_playback_delay() -> None:
     media.push_audio_sample.assert_called_once()
 
 
-def test_backend_config_persists_gemini_selection_and_status(
+def test_backend_config_rejects_legacy_cloud_backends(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Settings API should persist Gemini backend choice and token."""
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
-    monkeypatch.setattr(config, "MODEL_NAME", "gpt-realtime-2")
-    monkeypatch.setattr(config, "OPENAI_API_KEY", None)
-    monkeypatch.setattr(config, "GEMINI_API_KEY", None)
-    monkeypatch.setenv("BACKEND_PROVIDER", "openai")
-    monkeypatch.setenv("MODEL_NAME", "gpt-realtime-2")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    """Settings API should expose only local and Hugging Face production backends."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "local")
+    monkeypatch.setenv("BACKEND_PROVIDER", "local")
 
     app = FastAPI()
     robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
@@ -194,78 +188,9 @@ def test_backend_config_persists_gemini_selection_and_status(
 
     client = TestClient(app)
 
-    response = client.post(
-        "/backend_config",
-        json={"backend": "gemini", "api_key": "gem-test-token"},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ok"] is True
-    assert data["backend_provider"] == "gemini"
-    assert data["active_backend"] == "openai"
-    assert data["has_gemini_key"] is True
-    assert data["has_key"] is False
-    assert data["can_proceed"] is False
-    assert data["can_proceed_with_openai"] is False
-    assert data["can_proceed_with_gemini"] is True
-    assert data["requires_restart"] is True
-
-    status = client.get("/status")
-    assert status.status_code == 200
-    status_data = status.json()
-    assert status_data["backend_provider"] == "gemini"
-    assert status_data["active_backend"] == "openai"
-    assert status_data["has_gemini_key"] is True
-    assert status_data["can_proceed"] is False
-    assert status_data["can_proceed_with_openai"] is False
-    assert status_data["can_proceed_with_gemini"] is True
-
-    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "BACKEND_PROVIDER=gemini" in env_text
-    assert "MODEL_NAME=gemini-3.1-flash-live-preview" in env_text
-    assert "GEMINI_API_KEY=gem-test-token" in env_text
-
-
-def test_backend_config_preserves_explicit_model_override_when_saving_key(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Saving credentials should not reset a custom model override."""
-    custom_model = "gpt-4o-realtime-preview-2025-06-03"
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
-    monkeypatch.setattr(config, "MODEL_NAME", custom_model)
-    monkeypatch.setattr(config, "OPENAI_API_KEY", None)
-    monkeypatch.setattr(config, "GEMINI_API_KEY", None)
-    monkeypatch.setenv("BACKEND_PROVIDER", "openai")
-    monkeypatch.setenv("MODEL_NAME", custom_model)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
-    app = FastAPI()
-    robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
-    stream = LocalStream(MagicMock(), robot, settings_app=app, instance_path=str(tmp_path))
-    stream._init_settings_ui_if_needed()
-
-    client = TestClient(app)
-    response = client.post(
-        "/backend_config",
-        json={"backend": "openai", "api_key": "openai-test-key"},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ok"] is True
-    assert data["can_proceed"] is True
-    assert data["can_proceed_with_openai"] is True
-    assert data["can_proceed_with_gemini"] is False
-    assert config.MODEL_NAME == custom_model
-
-    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "BACKEND_PROVIDER=openai" in env_text
-    assert f"MODEL_NAME={custom_model}" in env_text
-    assert "MODEL_NAME=gpt-realtime-2" not in env_text
-    assert "OPENAI_API_KEY=openai-test-key" in env_text
+    assert client.post("/backend_config", json={"backend": "gemini"}).status_code == 400
+    assert client.post("/backend_config", json={"backend": "openai"}).status_code == 400
+    assert not (tmp_path / ".env").exists()
 
 
 def test_backend_config_persists_local_hf_selection_and_status(
@@ -478,32 +403,40 @@ def test_status_reports_direct_hf_ws_url_as_ready(
     assert data["can_proceed_with_hf"] is True
 
 
-def test_headless_personality_routes_return_gemini_voices_when_backend_selected(
+def _profile_store_with_default(tmp_path: Path) -> ProfileStore:
+    store = ProfileStore(tmp_path)
+    store.save_new("default", instructions="[default_prompt]", tools_text="dance\ncamera\n", voice="local")
+    return store
+
+
+def test_headless_profile_routes_return_local_voice_by_default(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Headless personality UI should expose Gemini voices when Gemini is selected."""
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
-    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    """Headless profile UI should expose the local production voice by default."""
+    store = _profile_store_with_default(tmp_path)
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "local")
 
     app = FastAPI()
     handler = MagicMock()
-    mount_personality_routes(app, handler, lambda: None)
+    mount_personality_routes(app, handler, lambda: None, profile_store=store)
 
     client = TestClient(app)
     response = client.get("/voices")
 
     assert response.status_code == 200
-    assert response.json() == GEMINI_AVAILABLE_VOICES
+    assert response.json() == ["local"]
 
 
-def test_headless_personality_routes_load_builtin_default_tools() -> None:
-    """Headless personality UI should expose built-in default tools on initial load."""
+def test_headless_profile_routes_load_default_tools(tmp_path: Path) -> None:
+    """Headless profile UI should expose repo-backed default tools on initial load."""
+    store = _profile_store_with_default(tmp_path)
     app = FastAPI()
     handler = MagicMock()
-    mount_personality_routes(app, handler, lambda: None)
+    mount_personality_routes(app, handler, lambda: None, profile_store=store)
 
     client = TestClient(app)
-    response = client.get("/personalities/load", params={"name": "(built-in default)"})
+    response = client.get("/profiles/load", params={"name": "default"})
 
     assert response.status_code == 200
     data = response.json()
@@ -512,8 +445,45 @@ def test_headless_personality_routes_load_builtin_default_tools() -> None:
     assert "camera" in data["enabled_tools"]
 
 
-def test_headless_personality_routes_apply_voice_accepts_query_param() -> None:
-    """Headless personality UI should apply a voice change from a POST query param."""
+def test_headless_profile_routes_save_new_and_overwrite(tmp_path: Path) -> None:
+    """Dashboard profile routes should create and overwrite repo-backed profiles."""
+    store = _profile_store_with_default(tmp_path)
+    app = FastAPI()
+    handler = MagicMock()
+    mount_personality_routes(app, handler, lambda: None, profile_store=store)
+
+    client = TestClient(app)
+    created = client.post(
+        "/profiles/save",
+        json={
+            "name": "Demo Profile",
+            "instructions": "Be concise.",
+            "tools_text": "dance\n",
+            "voice": "local",
+        },
+    )
+    overwritten = client.post(
+        "/profiles/save",
+        json={
+            "name": "Demo_Profile",
+            "instructions": "Be very concise.",
+            "tools_text": "camera\n",
+            "voice": "local",
+            "overwrite": True,
+        },
+    )
+
+    assert created.status_code == 200
+    assert created.json()["profile"] == "Demo_Profile"
+    assert overwritten.status_code == 200
+    loaded = client.get("/profiles/load", params={"name": "Demo_Profile"}).json()
+    assert loaded["instructions"] == "Be very concise."
+    assert loaded["enabled_tools"] == ["camera"]
+
+
+def test_headless_profile_routes_apply_voice_accepts_query_param(tmp_path: Path) -> None:
+    """Headless profile UI should apply and persist a voice change from a POST query param."""
+    store = _profile_store_with_default(tmp_path)
     app = FastAPI()
     handler = MagicMock()
     handler.change_voice = AsyncMock(return_value="Voice changed to cedar.")
@@ -531,7 +501,7 @@ def test_headless_personality_routes_apply_voice_accepts_query_param() -> None:
     started.wait(timeout=1.0)
 
     try:
-        mount_personality_routes(app, handler, lambda: loop)
+        mount_personality_routes(app, handler, lambda: loop, profile_store=store)
 
         client = TestClient(app)
         response = client.post("/voices/apply?voice=cedar")
@@ -539,17 +509,20 @@ def test_headless_personality_routes_apply_voice_accepts_query_param() -> None:
         assert response.status_code == 200
         assert response.json() == {"ok": True, "status": "Voice changed to cedar."}
         handler.change_voice.assert_awaited_once_with("cedar")
+        assert store.load("default").voice == "cedar"
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=1.0)
         loop.close()
 
 
-def test_headless_personality_routes_persist_startup_with_voice_override() -> None:
-    """Saving a startup personality should persist the active manual voice override."""
+def test_headless_profile_routes_persist_startup_with_voice_override(tmp_path: Path) -> None:
+    """Saving a startup profile should persist the active manual voice override."""
+    store = _profile_store_with_default(tmp_path)
+    store.save_new("demo", instructions="hello", tools_text="dance\n", voice="local")
     app = FastAPI()
     handler = MagicMock()
-    handler.apply_personality = AsyncMock(return_value="Applied personality and restarted realtime session.")
+    handler.apply_personality = AsyncMock(return_value="Applied profile and restarted realtime session.")
     handler.get_current_voice = MagicMock(return_value="shimmer")
     persist_personality = MagicMock()
 
@@ -566,15 +539,21 @@ def test_headless_personality_routes_persist_startup_with_voice_override() -> No
     started.wait(timeout=1.0)
 
     try:
-        mount_personality_routes(app, handler, lambda: loop, persist_personality=persist_personality)
+        mount_personality_routes(
+            app,
+            handler,
+            lambda: loop,
+            persist_personality=persist_personality,
+            profile_store=store,
+        )
 
         client = TestClient(app)
-        response = client.post("/personalities/apply?name=sorry_bro&persist=1")
+        response = client.post("/profiles/apply?name=demo&persist=1")
 
         assert response.status_code == 200
         assert response.json()["ok"] is True
-        handler.apply_personality.assert_awaited_once_with("sorry_bro")
-        persist_personality.assert_called_once_with("sorry_bro", "shimmer")
+        handler.apply_personality.assert_awaited_once_with("demo")
+        persist_personality.assert_called_once_with("demo", "shimmer")
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=1.0)
@@ -585,12 +564,12 @@ def test_local_stream_persist_personality_stores_voice_override(tmp_path) -> Non
     """Persisting startup settings should write both profile and voice override."""
     stream = LocalStream(MagicMock(), MagicMock(), instance_path=str(tmp_path))
 
-    stream._persist_personality("sorry_bro", "shimmer")
+    stream._persist_personality("default", "shimmer")
 
     settings_path = tmp_path / "startup_settings.json"
     assert settings_path.exists()
-    assert settings_path.read_text(encoding="utf-8") == '{\n  "profile": "sorry_bro",\n  "voice": "shimmer"\n}\n'
-    assert stream._read_persisted_personality() == "sorry_bro"
+    assert settings_path.read_text(encoding="utf-8") == '{\n  "profile": "default",\n  "voice": "shimmer"\n}\n'
+    assert stream._read_persisted_personality() == "default"
 
 
 def test_local_stream_persist_personality_clears_legacy_startup_env_overrides(tmp_path, monkeypatch) -> None:
@@ -614,7 +593,7 @@ def test_local_stream_persist_personality_clears_legacy_startup_env_overrides(tm
     applied_profiles: list[str | None] = []
     monkeypatch.delenv("REACHY_MINI_CUSTOM_PROFILE", raising=False)
     monkeypatch.setattr(
-        "reachy_mini_conversation_app.config.set_custom_profile",
+        "reachy_mini_conversation_app.runtime.config.set_custom_profile",
         lambda profile: applied_profiles.append(profile),
     )
 
@@ -634,9 +613,6 @@ def test_local_stream_launch_waits_for_manual_openai_key_without_download(
     monkeypatch.setenv("BACKEND_PROVIDER", "openai")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    fake_client_ctor = MagicMock(side_effect=AssertionError("launch() should not try to download an OpenAI key"))
-    monkeypatch.setitem(sys.modules, "gradio_client", SimpleNamespace(Client=fake_client_ctor))
-
     media = SimpleNamespace(
         start_recording=MagicMock(),
         start_playing=MagicMock(),
@@ -648,11 +624,10 @@ def test_local_stream_launch_waits_for_manual_openai_key_without_download(
     init_settings_ui = MagicMock()
     monkeypatch.setattr(stream, "_init_settings_ui_if_needed", init_settings_ui)
     monkeypatch.setattr(stream, "_has_required_key", MagicMock(side_effect=[False, False]))
-    monkeypatch.setattr("reachy_mini_conversation_app.console.time.sleep", MagicMock(side_effect=KeyboardInterrupt))
+    monkeypatch.setattr("reachy_mini_conversation_app.runtime.console.time.sleep", MagicMock(side_effect=KeyboardInterrupt))
 
     stream.launch()
 
-    fake_client_ctor.assert_not_called()
     init_settings_ui.assert_called_once()
     media.start_recording.assert_not_called()
     media.start_playing.assert_not_called()

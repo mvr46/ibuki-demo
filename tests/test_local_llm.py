@@ -6,7 +6,7 @@ from io import BytesIO
 from urllib.error import HTTPError
 from unittest.mock import patch
 
-from reachy_mini_conversation_app.local_llm import (
+from reachy_mini_conversation_app.backends.local_llm import (
     OllamaLLMAdapter,
     OllamaToolRouter,
     ollama_tool_schemas,
@@ -83,7 +83,7 @@ def test_ollama_llm_posts_wrapped_tools_and_normalizes_response() -> None:
         return _Response()
 
     adapter = OllamaLLMAdapter(base_url="http://ollama.test", model="gemma3:test", timeout_seconds=9)
-    with patch("reachy_mini_conversation_app.local_llm.urlopen", fake_urlopen):
+    with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
         response = adapter._chat_sync(
             [{"role": "user", "content": "dance"}],
             [{"type": "function", "name": "dance", "description": "Dance", "parameters": {"type": "object"}}],
@@ -124,7 +124,7 @@ def test_ollama_llm_retries_without_tools_when_schema_is_rejected() -> None:
         model="gemma3:test",
         diagnostics=type("Diagnostics", (), {"set_local_model": lambda self, **payload: diagnostics.update(payload)})(),
     )
-    with patch("reachy_mini_conversation_app.local_llm.urlopen", fake_urlopen):
+    with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
         response = adapter._chat_sync(
             [{"role": "user", "content": "say hi"}],
             [{"type": "function", "name": "dance", "description": "Dance", "parameters": {"type": "object"}}],
@@ -167,7 +167,7 @@ def test_ollama_tool_router_posts_compact_structured_payload() -> None:
         return RouterResponse()
 
     router = OllamaToolRouter(base_url="http://ollama.test", model="qwen3.5:test", timeout_seconds=3)
-    with patch("reachy_mini_conversation_app.local_llm.urlopen", fake_urlopen):
+    with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
         result = router._route_sync(
             "look at Matt",
             [

@@ -10,25 +10,22 @@ The package is installed as `reachy_mini_conversation_app` and exposes the conso
 reachy-mini-conversation-app
 ```
 
-The default backend is Hugging Face. OpenAI Realtime and Gemini Live are also supported through environment configuration.
+The default backend is local (`BACKEND_PROVIDER=local`): MLX Whisper for STT, Ollama Gemma for chat, Qwen for tool routing, and Piper for TTS. Hugging Face remains the production fallback. OpenAI Realtime and Gemini Live remain legacy adapters with deprecation warnings.
 
 ## Important paths
 
 | Path | Purpose |
 | --- | --- |
-| `src/reachy_mini_conversation_app/main.py` | Application entrypoint. Builds the robot, camera, motion manager, tool dependencies, selected realtime handler, and console/Gradio UI. |
-| `src/reachy_mini_conversation_app/base_realtime.py` | Shared handler for OpenAI-compatible realtime backends. Handles audio streaming, transcript updates, tool calls, reconnection, response queueing, and cost tracking. |
-| `src/reachy_mini_conversation_app/openai_realtime.py` | OpenAI Realtime backend adapter. |
-| `src/reachy_mini_conversation_app/huggingface_realtime.py` | Hugging Face OpenAI-compatible realtime backend adapter. |
-| `src/reachy_mini_conversation_app/gemini_live.py` | Gemini Live backend adapter. It implements the common conversation handler contract directly because Gemini uses a different SDK shape. |
-| `src/reachy_mini_conversation_app/conversation_handler.py` | Backend interface expected by FastRTC and app UI code. |
-| `src/reachy_mini_conversation_app/moves.py` | Robot motion manager. Owns the motion thread and blends primary moves with secondary offsets. |
-| `src/reachy_mini_conversation_app/camera_worker.py` | Camera capture loop and optional face-tracking offset producer. |
+| `src/reachy_mini_conversation_app/main.py` | Application entrypoint. Builds the robot, camera, motion manager, tool dependencies, selected conversation handler, and local stream/dashboard integration. |
+| `src/reachy_mini_conversation_app/backends/` | Conversation backend interface, factory, local backend, Hugging Face adapter, and legacy OpenAI/Gemini adapters. |
+| `src/reachy_mini_conversation_app/backends/base_realtime.py` | Shared handler for OpenAI-compatible realtime backends. Handles audio streaming, transcript updates, tool calls, reconnection, response queueing, and cost tracking. |
+| `src/reachy_mini_conversation_app/backends/factory.py` | Backend factory. Keeps `main.py` focused on composition and hides legacy adapter selection behind one small interface. |
+| `src/reachy_mini_conversation_app/backends/interface.py` | Backend interface expected by the local robot audio stream and dashboard code. |
+| `src/reachy_mini_conversation_app/runtime/` | Runtime config, CLI helpers, local stream, dashboard routes, diagnostics, transport, and startup settings. |
+| `src/reachy_mini_conversation_app/motion/` | Robot motion manager and queued dance/emotion moves. |
 | `src/reachy_mini_conversation_app/tools/` | Function-call tools exposed to the realtime assistant. |
-| `src/reachy_mini_conversation_app/vision/` | Local vision and head-tracking implementations. |
-| `src/reachy_mini_conversation_app/prompts.py` | Prompt/profile loading and prompt include expansion. |
-| `profiles/` | Built-in personality profiles. Each profile usually has `instructions.txt` and `tools.txt`. |
-| `external_content/` | Starter examples for custom profiles and tools. |
+| `src/reachy_mini_conversation_app/vision/` | Camera capture, perception stream, face identity, local vision, and head-tracking implementations. |
+| `src/reachy_mini_conversation_app/profiles/` | Profile store, prompt loading, profile dashboard routes, and curated production profile data. |
 | `tests/` | Unit tests for backend adapters, config, tools, startup settings, camera, vision, and audio helpers. |
 
 ## Runtime flow
@@ -38,22 +35,22 @@ The default backend is Hugging Face. OpenAI Realtime and Gemini Live are also su
 3. `MovementManager` starts the robot motion control surface.
 4. `ToolDependencies` collects robot, motion, camera, vision, and audio-reactive motion dependencies for tools.
 5. The selected backend handler is created:
+   - Local: `LocalConversationHandler`
    - Hugging Face: `HuggingFaceRealtimeHandler`
-   - OpenAI: `OpenaiRealtimeHandler`
-   - Gemini: `GeminiLiveHandler`
-6. FastRTC streams audio into the handler and receives audio/transcript outputs.
-7. When the model calls a tool, `tools.core_tools` dispatches it against the injected dependencies.
+   - OpenAI/Gemini: legacy adapters only
+6. `LocalStream` moves robot audio frames into the handler and plays returned audio/transcript outputs.
+7. When the model calls a tool, `ToolRegistry` dispatches it against the injected dependencies.
 8. Tools queue robot movements, capture/analyze camera frames, toggle head tracking, or manage background tasks.
 
 ## Design principles already visible in the code
 
 - Backend handlers share a common `ConversationHandler` interface.
 - OpenAI-compatible backends inherit most behavior from `BaseRealtimeHandler`.
-- Tools are dependency-injected through `ToolDependencies` instead of reaching for globals.
+- Tools are loaded through an explicit `ToolRegistry` for the active profile and dependency-injected through `ToolDependencies`.
 - Motion has one robot output point: `MovementManager` calls `ReachyMini.set_target` from its own worker thread.
 - Primary moves are sequential; speech wobble and face tracking are secondary offsets blended on top.
 - Camera capture is isolated in a worker thread and exposes snapshots through thread-safe accessors.
-- Profiles select instructions and tools without changing backend code.
+- Profiles select instructions, voice, and enabled core tools without changing backend code.
 
 ## Working assumptions for contributors and agents
 
@@ -63,4 +60,3 @@ The default backend is Hugging Face. OpenAI Realtime and Gemini Live are also su
 - Do not commit `.env` files or API keys.
 - When changing realtime behavior, test at least the relevant backend unit tests and any shared `base_realtime` behavior.
 - When changing movement or camera threading, look for lifecycle cleanup paths as carefully as happy paths.
-

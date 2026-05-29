@@ -11,8 +11,8 @@ from urllib.request import Request, urlopen
 import numpy as np
 from numpy.typing import NDArray
 
-from reachy_mini_conversation_app.config import config
-from reachy_mini_conversation_app.camera_frame_encoding import encode_bgr_frame_as_jpeg
+from reachy_mini_conversation_app.runtime.config import config
+from reachy_mini_conversation_app.vision.camera_frame_encoding import encode_bgr_frame_as_jpeg
 
 
 logger = logging.getLogger(__name__)

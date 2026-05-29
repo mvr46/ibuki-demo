@@ -1,72 +1,26 @@
-from pathlib import Path
-
 import pytest
 
-import reachy_mini_conversation_app.config as config_mod
+import reachy_mini_conversation_app.runtime.config as config_mod
 
 
-def test_config_raises_on_external_profile_name_collision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Config should fail fast when external/built-in profile names collide."""
-    external_profiles = tmp_path / "external_profiles"
-    external_profiles.mkdir(parents=True)
-    (external_profiles / "default").mkdir()
+def test_config_ignores_external_profile_and_tool_directories(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production config should ignore external profile/tool roots."""
+    monkeypatch.setenv("REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY", "/tmp/external_profiles")
+    monkeypatch.setenv("REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY", "/tmp/external_tools")
 
-    monkeypatch.setattr(config_mod.Config, "PROFILES_DIRECTORY", external_profiles)
-    monkeypatch.setattr(config_mod.Config, "TOOLS_DIRECTORY", None)
+    created = config_mod.Config()
 
-    with pytest.raises(RuntimeError, match="Ambiguous profile names"):
-        config_mod.Config()
-
-
-def test_config_raises_on_external_profile_name_collision_with_builtin_alias(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Config should treat compact built-in profile names as reserved."""
-    external_profiles = tmp_path / "external_profiles"
-    external_profiles.mkdir(parents=True)
-    (external_profiles / "mad_scientist_assistant").mkdir()
-
-    monkeypatch.setattr(config_mod.Config, "PROFILES_DIRECTORY", external_profiles)
-    monkeypatch.setattr(config_mod.Config, "TOOLS_DIRECTORY", None)
-
-    with pytest.raises(RuntimeError, match="Ambiguous profile names"):
-        config_mod.Config()
+    assert created.PROFILES_DIRECTORY == config_mod.DEFAULT_PROFILES_DIRECTORY
+    assert created.TOOLS_DIRECTORY is None
+    assert created.AUTOLOAD_EXTERNAL_TOOLS is False
 
 
-def test_config_raises_on_external_tool_name_collision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Config should fail fast when external/built-in tool names collide."""
-    external_tools = tmp_path / "external_tools"
-    external_tools.mkdir(parents=True)
-    (external_tools / "dance.py").write_text("# collision with built-in dance tool\n", encoding="utf-8")
-
-    monkeypatch.setattr(config_mod.Config, "PROFILES_DIRECTORY", config_mod.DEFAULT_PROFILES_DIRECTORY)
-    monkeypatch.setattr(config_mod.Config, "TOOLS_DIRECTORY", external_tools)
-
-    with pytest.raises(RuntimeError, match="Ambiguous tool names"):
-        config_mod.Config()
-
-
-def test_config_raises_when_selected_external_profile_is_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Config should fail fast when selected profile is absent from external root."""
-    external_profiles = tmp_path / "external_profiles"
-    external_profiles.mkdir(parents=True)
-
-    monkeypatch.setattr(config_mod.Config, "REACHY_MINI_CUSTOM_PROFILE", "missing_profile")
-    monkeypatch.setattr(config_mod.Config, "PROFILES_DIRECTORY", external_profiles)
-    monkeypatch.setattr(config_mod.Config, "TOOLS_DIRECTORY", None)
-
-    with pytest.raises(RuntimeError, match="Selected profile 'missing_profile' was not found"):
-        config_mod.Config()
-
-
-def test_backend_provider_defaults_to_hf_when_unset() -> None:
-    """Non-Gemini models should default to the Hugging Face backend."""
-    assert config_mod._normalize_backend_provider(None, None) == config_mod.HF_BACKEND
-    assert config_mod._normalize_backend_provider("", None) == config_mod.HF_BACKEND
-    assert config_mod._normalize_backend_provider(None, "gpt-realtime-2") == config_mod.HF_BACKEND
-    assert config_mod._normalize_backend_provider(None, "gemini-3.1-flash-live-preview") == config_mod.GEMINI_BACKEND
+def test_backend_provider_defaults_to_local_when_unset() -> None:
+    """Production should default to the local Gemma/Qwen backend."""
+    assert config_mod._normalize_backend_provider(None, None) == config_mod.LOCAL_BACKEND
+    assert config_mod._normalize_backend_provider("", None) == config_mod.LOCAL_BACKEND
+    assert config_mod._normalize_backend_provider(None, "gpt-realtime-2") == config_mod.LOCAL_BACKEND
+    assert config_mod._normalize_backend_provider(None, "gemini-3.1-flash-live-preview") == config_mod.LOCAL_BACKEND
 
 
 def test_backend_provider_rejects_explicit_unknown_backend() -> None:
@@ -89,11 +43,11 @@ def test_local_backend_resolves_ollama_model(monkeypatch: pytest.MonkeyPatch) ->
     assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "qwen3.5:test"
 
 
-def test_local_backend_defaults_to_gemma3_4b(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_local_backend_defaults_to_gemma3_latest(monkeypatch: pytest.MonkeyPatch) -> None:
     """Local backend should default to Gemma for normal local chat and vision."""
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
 
-    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "gemma3:4b"
+    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "gemma3:latest"
 
 
 def test_hf_default_session_url_uses_stable_space_proxy() -> None:
