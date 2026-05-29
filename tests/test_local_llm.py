@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import json
+import asyncio
 from io import BytesIO
 from urllib.error import HTTPError
 from unittest.mock import patch
@@ -9,6 +10,8 @@ from unittest.mock import patch
 from reachy_mini_conversation_app.backends.local_llm import (
     OllamaLLMAdapter,
     OllamaToolRouter,
+    LocalToolRoutingResult,
+    _parse_router_content,
     ollama_tool_schemas,
     ollama_tool_call_messages,
 )
@@ -186,5 +189,118 @@ def test_ollama_tool_router_posts_compact_structured_payload() -> None:
     assert captured["payload"]["think"] is False
     assert captured["payload"]["options"]["num_predict"] <= 64
     assert captured["payload"]["format"]["required"] == ["tool_calls"]
-    assert "available_tools" in captured["payload"]["messages"][1]["content"]
+    user_content = json.loads(captured["payload"]["messages"][1]["content"])
+    assert "tools" in user_content
+    assert "available_tools" not in user_content
+    assert user_content["tools"][0]["arguments"]["name"]["type"] == "string"
     assert result.tool_calls == [{"name": "look_at_person", "arguments": {"name": "Matt"}}]
+
+
+def test_qwen_router_parser_accepts_raw_json() -> None:
+    """Router parser should accept the exact raw JSON shape requested from Qwen."""
+    parsed = _parse_router_content('{"tool_calls":[{"name":"who_am_i","arguments":{}}]}')
+
+    assert parsed == [{"name": "who_am_i", "arguments": {}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_strips_fenced_json() -> None:
+    """Router parser should tolerate Markdown fences returned by Qwen."""
+    parsed = _parse_router_content('```json\n{"tool_calls":[{"name":"camera","arguments":{"question":"what do you see"}}]}\n```')
+
+    assert parsed == [{"name": "camera", "arguments": {"question": "what do you see"}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_accepts_parameters_alias() -> None:
+    """Router parser should normalize Qwen's observed parameters alias to arguments."""
+    parsed = _parse_router_content('{"tool_calls":[{"name":"move_head","parameters":{"direction":"left"}}]}')
+
+    assert parsed == [{"name": "move_head", "arguments": {"direction": "left"}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_marks_invalid_json() -> None:
+    """Invalid router output should be logged as a parse failure without a fallback call."""
+    parsed = _parse_router_content("not json")
+
+    assert parsed == []
+    assert parsed.parse_error is True
+
+
+def test_ollama_tool_router_ignores_unknown_qwen_tool() -> None:
+    """Unknown Qwen-selected tools should be dropped without substituting a deterministic call."""
+    class RouterResponse:
+        def __enter__(self) -> "RouterResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"message": {"content": '{"tool_calls":[{"name":"unknown_tool","arguments":{}}]}'}}).encode(
+                "utf-8"
+            )
+
+    def fake_urlopen(req: object, timeout: float) -> RouterResponse:
+        return RouterResponse()
+
+    router = OllamaToolRouter(base_url="http://ollama.test", model="qwen3.5:test")
+    with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
+        result = router._route_sync(
+            "do something",
+            [{"type": "function", "name": "camera", "description": "Camera", "parameters": {}}],
+        )
+
+    assert result.tool_calls == []
+    assert result.ignored_tool_name == "unknown_tool"
+    assert result.parse_error is False
+
+
+def test_ollama_tool_router_reports_qwen_no_tool_without_deterministic_shortcut() -> None:
+    """Qwen no-tool responses should stay no-tool, even for action-like utterances."""
+    async def run() -> None:
+        diagnostics = {}
+        router = OllamaToolRouter(
+            diagnostics=type(
+                "Diagnostics",
+                (),
+                {"set_local_model": lambda self, **payload: diagnostics.update(payload)},
+            )()
+        )
+        router._route_sync = lambda _text, _tools: LocalToolRoutingResult(tool_calls=[])  # type: ignore[method-assign]
+        tools = [{"type": "function", "name": "move_head", "description": "Move head", "parameters": {}}]
+
+        result = await router.route("move your head left", tools)
+
+        assert result.tool_calls == []
+        assert diagnostics["qwen_router_status"] == "qwen_no_tool"
+
+    asyncio.run(run())
+
+
+def test_ollama_tool_router_reports_qwen_parse_error() -> None:
+    """Malformed Qwen output should surface as qwen_parse_error for diagnostics."""
+    async def run() -> None:
+        diagnostics = {}
+        router = OllamaToolRouter(
+            diagnostics=type(
+                "Diagnostics",
+                (),
+                {"set_local_model": lambda self, **payload: diagnostics.update(payload)},
+            )()
+        )
+        router._route_sync = lambda _text, _tools: LocalToolRoutingResult(  # type: ignore[method-assign]
+            tool_calls=[],
+            raw_content="```json\n{bad",
+            parse_error=True,
+        )
+        tools = [{"type": "function", "name": "camera", "description": "Camera", "parameters": {}}]
+
+        result = await router.route("what do you see?", tools)
+
+        assert result.tool_calls == []
+        assert diagnostics["qwen_router_status"] == "qwen_parse_error"
+        assert diagnostics["last_ollama_error"] == "```json\n{bad"
+
+    asyncio.run(run())

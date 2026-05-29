@@ -45,7 +45,12 @@ from reachy_mini_conversation_app.runtime.config import (
     refresh_runtime_config_from_env,
 )
 from reachy_mini_conversation_app.profiles.routes import mount_personality_routes
-from reachy_mini_conversation_app.runtime.dashboard import DashboardLogBuffer, mount_dashboard_routes
+from reachy_mini_conversation_app.runtime.dashboard import (
+    DashboardLogBuffer,
+    mount_dashboard_routes,
+    dashboard_routes_mounted,
+    ensure_dashboard_runtime_state,
+)
 from reachy_mini_conversation_app.runtime.streaming import AdditionalOutputs, audio_to_float32
 from reachy_mini_conversation_app.runtime.transport import probe_host, measure_http_rtt_ms
 from reachy_mini_conversation_app.backends.interface import ConversationHandler
@@ -173,7 +178,10 @@ class LocalStream:
         self._settings_initialized = False
         self._asyncio_loop = None
         self._active_backend_name = get_backend_choice()
-        self._dashboard_logs = DashboardLogBuffer()
+        if self._settings_app is None:
+            self._dashboard_logs = DashboardLogBuffer()
+        else:
+            self._dashboard_logs = ensure_dashboard_runtime_state(self._settings_app).logs
 
     # ---- Settings UI ----
     def _read_env_lines(self, env_path: Path) -> list[str]:
@@ -502,19 +510,30 @@ class LocalStream:
         def _status() -> JSONResponse:
             return JSONResponse(_status_payload())
 
+        dashboard_state = ensure_dashboard_runtime_state(self._settings_app, logs=self._dashboard_logs)
+        dashboard_state.deps_provider = lambda: getattr(self.handler, "deps", None)
+        dashboard_state.backend_status_provider = _status_payload
+        self._dashboard_logs = dashboard_state.logs
         self._dashboard_logs.install()
-        self._dashboard_logs.add("Dashboard routes mounted", category="SYSTEM")
-        mount_dashboard_routes(
-            self._settings_app,
-            get_deps=lambda: getattr(self.handler, "deps", None),
-            get_backend_status=_status_payload,
-            logs=self._dashboard_logs,
-        )
+        if not dashboard_routes_mounted(self._settings_app):
+            self._dashboard_logs.add("Dashboard routes mounted", category="SYSTEM")
+            mount_dashboard_routes(
+                self._settings_app,
+                get_deps=dashboard_state.get_deps,
+                get_backend_status=dashboard_state.get_backend_status,
+                logs=self._dashboard_logs,
+            )
+        else:
+            self._dashboard_logs.add("Dashboard routes connected to runtime", category="SYSTEM")
 
         # GET /ready -> whether backend finished loading tools
         @self._settings_app.get("/ready")
         def _ready() -> JSONResponse:
             try:
+                deps = getattr(self.handler, "deps", None)
+                registry = getattr(deps, "tool_registry", None)
+                if registry is not None and bool(getattr(registry, "tools", None)):
+                    return JSONResponse({"ready": True})
                 mod = sys.modules.get("reachy_mini_conversation_app.tools.core_tools")
                 ready = bool(getattr(mod, "_TOOLS_INITIALIZED", False)) if mod else False
             except Exception:

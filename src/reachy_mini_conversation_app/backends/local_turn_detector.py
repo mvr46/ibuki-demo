@@ -21,8 +21,6 @@ class LocalTurnDetectorConfig:
     min_speech_seconds: float = 0.35
     min_speech_ratio: float = 0.45
     min_snr_db: float = 8.0
-    robot_activity_min_speech_ratio: float = 0.75
-    robot_activity_min_snr_db: float = 18.0
     min_frame_rms: float = 120.0
     initial_noise_floor_rms: float = 80.0
     noise_floor_alpha: float = 0.05
@@ -250,26 +248,15 @@ class LocalTurnDetector:
         self._last_speech_ratio = speech_ratio
         avg_snr = _mean(item.stats.snr_db for item in voiced_region)
 
-        required_ratio = (
-            self.config.robot_activity_min_speech_ratio if robot_activity else self.config.min_speech_ratio
-        )
-        required_snr = self.config.robot_activity_min_snr_db if robot_activity else self.config.min_snr_db
-        if speech_ratio < required_ratio or avg_snr < required_snr:
-            reason = "robot_noise_suppressed" if robot_activity else "low_speech_confidence"
-            return self._reject_from_segment(reason, segment, duration_s, robot_activity, speech_ratio, avg_snr)
-
         narrowband_ratio = _ratio(item.stats.noise_class == "narrowband" for item in voiced_region)
         broadband_ratio = _ratio(item.stats.noise_class == "broadband" for item in voiced_region)
         low_band_ratio = _ratio(item.stats.noise_class == "low_band" for item in voiced_region)
         if narrowband_ratio >= 0.35:
-            reason = "robot_noise_suppressed" if robot_activity else "narrowband_noise"
-            return self._reject_from_segment(reason, segment, duration_s, robot_activity, speech_ratio, avg_snr)
+            return self._reject_from_segment("narrowband_noise", segment, duration_s, robot_activity, speech_ratio, avg_snr)
         if broadband_ratio >= 0.45:
-            reason = "robot_noise_suppressed" if robot_activity else "broadband_noise"
-            return self._reject_from_segment(reason, segment, duration_s, robot_activity, speech_ratio, avg_snr)
+            return self._reject_from_segment("broadband_noise", segment, duration_s, robot_activity, speech_ratio, avg_snr)
         if low_band_ratio >= 0.5:
-            reason = "robot_noise_suppressed" if robot_activity else "mechanical_noise"
-            return self._reject_from_segment(reason, segment, duration_s, robot_activity, speech_ratio, avg_snr)
+            return self._reject_from_segment("mechanical_noise", segment, duration_s, robot_activity, speech_ratio, avg_snr)
 
         audio = np.concatenate([item.audio for item in segment]).astype(np.int16, copy=False)
         return LocalCompletedTurn(
@@ -347,10 +334,9 @@ class LocalTurnDetector:
             zero_crossing_rate=zcr,
             peak_dominance=peak_dominance,
         )
-        required_snr = self.config.robot_activity_min_snr_db if robot_activity else self.config.min_snr_db
         speech_like = (
             rms >= self.config.min_frame_rms
-            and snr_db >= required_snr
+            and snr_db >= self.config.min_snr_db
             and speech_band_ratio >= 0.35
             and 0.005 <= zcr <= 0.35
             and noise_class == "speech_like"

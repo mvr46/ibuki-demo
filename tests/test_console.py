@@ -123,6 +123,19 @@ def test_local_backend_requires_ready_piper_voice(monkeypatch: pytest.MonkeyPatc
     assert stream._requirement_name(LOCAL_BACKEND) == "PIPER_VOICE"
 
 
+def test_ready_uses_explicit_profile_tool_registry(tmp_path: Path) -> None:
+    """The dashboard ready probe should not depend on the legacy global tool flag."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.deps = SimpleNamespace(tool_registry=SimpleNamespace(tools={"dance": object()}))
+    robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+    stream = LocalStream(handler, robot, settings_app=app, instance_path=str(tmp_path))
+
+    stream._init_settings_ui_if_needed()
+
+    assert TestClient(app).get("/ready").json() == {"ready": True}
+
+
 @pytest.mark.asyncio
 async def test_play_loop_feeds_head_wobbler_with_local_playback_delay() -> None:
     """Local playback should drive speech wobble using the queued player delay."""

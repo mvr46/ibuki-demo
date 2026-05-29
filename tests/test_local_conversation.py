@@ -1,6 +1,7 @@
 """Tests for the local-first conversation handler."""
 
 from __future__ import annotations
+import logging
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -30,8 +31,10 @@ class _FakeRouter:
     def __init__(self, tool_calls: list[dict[str, object]] | None = None) -> None:
         self.tool_calls = tool_calls or []
         self.tool_counts: list[int] = []
+        self.user_texts: list[str] = []
 
     async def route(self, user_text: str, tools: list[dict[str, object]]) -> LocalToolRoutingResult:
+        self.user_texts.append(user_text)
         self.tool_counts.append(len(tools))
         return LocalToolRoutingResult(tool_calls=self.tool_calls)
 
@@ -92,6 +95,31 @@ async def test_local_conversation_processes_one_audio_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_conversation_logs_stt_and_tts_phrases(caplog: pytest.LogCaptureFixture) -> None:
+    """Local voice turns should log incoming STT and outgoing TTS phrases."""
+    caplog.set_level(logging.INFO, logger="reachy_mini_conversation_app.backends.local_conversation")
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        performance_diagnostics=MagicMock(),
+    )
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=_FakeLLM(),
+        tts_adapter=_FakeTTS(),
+    )
+
+    await handler._process_turn(np.ones(1600, dtype=np.int16))
+
+    log_messages = [record.getMessage() for record in caplog.records]
+    assert any("STT start" in message for message in log_messages)
+    assert any("STT transcript" in message and "hello reachy" in message for message in log_messages)
+    assert any("TTS synth start" in message and "hello human" in message for message in log_messages)
+    assert any("TTS synth done" in message for message in log_messages)
+
+
+@pytest.mark.asyncio
 async def test_local_conversation_attaches_tools_for_robot_action_turn() -> None:
     """Local handler should route robot actions through the compact router only."""
     deps = ToolDependencies(
@@ -128,6 +156,171 @@ async def test_local_conversation_attaches_tools_for_robot_action_turn() -> None
     assert isinstance(assistant_output, AdditionalOutputs)
     assert assistant_output.args[0]["content"] == "Okay, looking at Matt."
     assert isinstance(audio_output, tuple)
+
+
+@pytest.mark.asyncio
+async def test_local_conversation_falls_back_to_llm_when_qwen_selects_no_tool() -> None:
+    """Action-like utterances should not use deterministic shortcuts when Qwen returns no tool."""
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        performance_diagnostics=MagicMock(),
+    )
+    llm = _FakeLLM()
+    router = _FakeRouter([])
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=llm,
+        tts_adapter=_FakeTTS(),
+        tool_router=router,
+    )
+    handler._messages.append({"role": "user", "content": "move your head left"})
+
+    await handler._respond_to_current_messages()
+
+    assistant_output = await handler.output_queue.get()
+    audio_output = await handler.output_queue.get()
+
+    assert router.user_texts == ["move your head left"]
+    assert router.tool_counts and router.tool_counts[-1] > 0
+    assert llm.tool_counts == [0]
+    assert isinstance(assistant_output, AdditionalOutputs)
+    assert assistant_output.args[0]["content"] == "hello human"
+    assert isinstance(audio_output, tuple)
+
+
+@pytest.mark.asyncio
+async def test_local_conversation_speaks_fallback_for_empty_llm_response() -> None:
+    """Empty local LLM responses should still produce useful speech."""
+    class EmptyLLM:
+        async def chat(self, messages: list[dict[str, object]], tools: list[dict[str, object]]) -> LocalLLMResponse:
+            return LocalLLMResponse(content="", tool_calls=[])
+
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+    )
+    tts = _CapturingTTS()
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=EmptyLLM(),
+        tts_adapter=tts,
+    )
+    handler._messages.append({"role": "user", "content": "say something"})
+
+    await handler._respond_to_current_messages()
+
+    assistant_output = await handler.output_queue.get()
+
+    assert isinstance(assistant_output, AdditionalOutputs)
+    assert assistant_output.args[0]["content"] == "I heard you, but my local model came back empty. Try that once more?"
+    assert tts.texts == ["I heard you, but my local model came back empty. Try that once more?"]
+
+
+@pytest.mark.asyncio
+async def test_local_conversation_strips_markdown_bullets_before_tts() -> None:
+    """Piper should not receive Markdown bullets that it reads aloud as punctuation names."""
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+    )
+    tts = _CapturingTTS()
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=_FakeLLM(),
+        tts_adapter=tts,
+    )
+
+    await handler._speak_response(
+        "Here's what I see in the image: * A young man with dark hair. * A white shirt. * A bookshelf with books."
+    )
+
+    assistant_output = await handler.output_queue.get()
+
+    assert isinstance(assistant_output, AdditionalOutputs)
+    expected = "Here's what I see in the image: A young man with dark hair. A white shirt. A bookshelf with books."
+    assert assistant_output.args[0]["content"] == expected
+    assert tts.texts == [expected]
+    assert "*" not in tts.texts[0]
+
+
+@pytest.mark.asyncio
+async def test_local_conversation_uses_useful_informational_tool_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Informational tools should not be reduced to generic acknowledgements."""
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+    )
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=_FakeLLM(),
+        tts_adapter=_FakeTTS(),
+    )
+    results = {
+        "who_am_i": {"status": "identified", "name": "Matteo"},
+        "who_is_here": {"people": [{"name": "Alice"}, {"name": None}]},
+        "camera": {"image_description": "I see a desk and a keyboard."},
+    }
+
+    async def fake_dispatch(tool_name: str, args_json: str, deps: object) -> dict[str, object]:
+        return results[tool_name]
+
+    monkeypatch.setattr("reachy_mini_conversation_app.backends.local_conversation.dispatch_tool_call", fake_dispatch)
+
+    assert await handler._execute_routed_tool_call({"name": "who_am_i", "arguments": {}}) == "You look like Matteo."
+    assert (
+        await handler._execute_routed_tool_call({"name": "who_is_here", "arguments": {}})
+        == "I see Alice and 1 unknown person."
+    )
+    assert (
+        await handler._execute_routed_tool_call({"name": "camera", "arguments": {}})
+        == "I see a desk and a keyboard."
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_conversation_dispatches_task_status_with_background_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local system tools should receive the handler's BackgroundToolManager."""
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+    )
+    handler = LocalConversationHandler(
+        deps,
+        stt_adapter=_FakeSTT(),
+        llm_adapter=_FakeLLM(),
+        tts_adapter=_FakeTTS(),
+    )
+    captured = {}
+
+    async def fake_dispatch_with_manager(
+        tool_name: str,
+        args_json: str,
+        deps_arg: object,
+        tool_manager: object,
+    ) -> dict[str, object]:
+        captured["tool_name"] = tool_name
+        captured["deps"] = deps_arg
+        captured["manager"] = tool_manager
+        return {"status": "idle", "message": "No tools running in the background."}
+
+    monkeypatch.setattr(
+        "reachy_mini_conversation_app.backends.local_conversation.dispatch_tool_call_with_manager",
+        fake_dispatch_with_manager,
+    )
+
+    spoken = await handler._execute_routed_tool_call({"name": "task_status", "arguments": {}})
+
+    assert captured == {"tool_name": "task_status", "deps": deps, "manager": handler.tool_manager}
+    assert spoken == "No tools running in the background."
 
 
 @pytest.mark.asyncio

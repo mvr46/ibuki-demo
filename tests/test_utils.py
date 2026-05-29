@@ -52,17 +52,19 @@ def test_parse_args_accepts_robot_connection_options(monkeypatch: pytest.MonkeyP
 
 
 def test_parse_args_defaults_to_network_connection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default startup should target robot media over the network, not local USB media."""
+    """Default startup should target the wired robot LAN."""
     monkeypatch.setattr(sys, "argv", ["reachy-mini-conversation-app"])
 
     args, unknown = parse_args()
 
     assert unknown == []
     assert args.connection_mode == "network"
+    assert args.media_backend == "webrtc"
+    assert args.hardware_profile == "mac-mini-wired"
 
 
-def test_initialize_camera_and_vision_propagates_local_vision_init_failures() -> None:
-    """Explicit local vision requests should preserve unexpected initialization errors."""
+def test_initialize_camera_and_vision_defers_local_vision_init_failures() -> None:
+    """Explicit local vision requests should not block app startup on model loading."""
     args = argparse.Namespace(
         no_camera=False,
         head_tracker=None,
@@ -77,8 +79,11 @@ def test_initialize_camera_and_vision_propagates_local_vision_init_failures() ->
             side_effect=RuntimeError("Vision processor initialization failed"),
         ),
     ):
+        _camera_worker, vision_processor = initialize_camera_and_vision(args, MagicMock())
+
+        assert vision_processor is not None
         with pytest.raises(RuntimeError, match="Vision processor initialization failed"):
-            initialize_camera_and_vision(args, MagicMock())
+            vision_processor.process_image(MagicMock(), "Describe this.")
 
     mock_camera_worker.assert_called_once()
 

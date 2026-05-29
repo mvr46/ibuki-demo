@@ -44,7 +44,8 @@ const defaultRobotHost = process.env.DASHBOARD_ROBOT_HOST || "";
 const defaultRobotPort = process.env.DASHBOARD_ROBOT_PORT || "";
 const defaultRobotName = process.env.DASHBOARD_ROBOT_NAME || "";
 const defaultHeadTracker = process.env.DASHBOARD_HEAD_TRACKER || "yolo";
-const defaultMediaBackend = process.env.DASHBOARD_MEDIA_BACKEND || "";
+const defaultMediaBackend = process.env.DASHBOARD_MEDIA_BACKEND || "webrtc";
+const defaultHardwareProfile = process.env.DASHBOARD_HARDWARE_PROFILE || "mac-mini-wired";
 
 function quoteCommandArg(value: string): string {
   if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
@@ -53,11 +54,10 @@ function quoteCommandArg(value: string): string {
 
 function buildDefaultCommand(): string {
   const parts = [
+    "REACHY_DASHBOARD_SERVER=1",
     "uv",
     "run",
-    "python",
-    "-m",
-    "reachy_mini_conversation_app.main",
+    "reachy-mini-conversation-app",
     "--connection-mode",
     "network",
   ];
@@ -66,6 +66,7 @@ function buildDefaultCommand(): string {
     parts.push("--head-tracker", defaultHeadTracker);
   }
   if (defaultMediaBackend) parts.push("--media-backend", defaultMediaBackend);
+  if (defaultHardwareProfile) parts.push("--hardware-profile", defaultHardwareProfile);
   if (defaultRobotHost) parts.push("--robot-host", defaultRobotHost);
   if (defaultRobotPort) parts.push("--robot-port", defaultRobotPort);
   if (defaultRobotName) parts.push("--robot-name", defaultRobotName);
@@ -176,7 +177,10 @@ function dashboardProcessPlugin(): Plugin {
   }
 
   function isReachyConversationCommand(): boolean {
-    return runningCommand.includes("reachy_mini_conversation_app.main");
+    return (
+      runningCommand.includes("reachy-mini-conversation-app") ||
+      runningCommand.includes("reachy_mini_conversation_app.main")
+    );
   }
 
   function isBackendProbeNoise(line: string): boolean {
@@ -287,6 +291,8 @@ function dashboardProcessPlugin(): Plugin {
       defaultRobotPort,
       defaultRobotName,
       defaultHeadTracker,
+      defaultMediaBackend,
+      defaultHardwareProfile,
       startedAt,
       exitedAt,
       exitCode,

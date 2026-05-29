@@ -10,7 +10,13 @@ import pytest
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
 from reachy_mini_conversation_app.backends.local_llm import LocalLLMResponse
 from reachy_mini_conversation_app.backends.local_conversation import LocalConversationHandler
-from reachy_mini_conversation_app.backends.local_turn_detector import LocalTurnDetector, LocalTurnDetectorConfig
+from reachy_mini_conversation_app.backends.local_turn_detector import (
+    _BufferedFrame,
+    LocalFrameStats,
+    LocalCompletedTurn,
+    LocalTurnDetector,
+    LocalTurnDetectorConfig,
+)
 
 
 SR = 16000
@@ -51,6 +57,23 @@ def _detector() -> LocalTurnDetector:
     )
 
 
+def _stats(*, speech_like: bool, snr_db: float = 28.2) -> LocalFrameStats:
+    """Return deterministic frame stats for direct segment-threshold tests."""
+    return LocalFrameStats(
+        rms=1200.0,
+        noise_floor_rms=45.0,
+        snr_db=snr_db,
+        speech_band_ratio=0.72,
+        spectral_flatness=0.22,
+        spectral_centroid_hz=1100.0,
+        zero_crossing_rate=0.11,
+        peak_dominance=0.18,
+        speech_like=speech_like,
+        robot_activity=True,
+        noise_class="speech_like",
+    )
+
+
 def test_mechanical_noise_fixtures_do_not_complete_turns() -> None:
     """Servo and motor noise should not produce turns for STT."""
     silence = np.zeros(int(SR * 0.2), dtype=np.int16)
@@ -76,8 +99,8 @@ def test_real_speech_fixture_completes_with_pre_roll() -> None:
     assert completed.speech_ratio >= 0.45
 
 
-def test_robot_activity_requires_high_confidence_speech() -> None:
-    """Robot activity should suppress weak speech-shaped input but allow strong near-field speech."""
+def test_robot_activity_uses_normal_speech_thresholds() -> None:
+    """Robot activity should be diagnostics only, not an extra suppression gate."""
     silence = np.zeros(int(SR * 0.2), dtype=np.int16)
     weak_detector = _detector()
     weak_detector.process(_speech_like(amplitude=0.03), robot_activity=True)
@@ -87,8 +110,84 @@ def test_robot_activity_requires_high_confidence_speech() -> None:
     strong_detector.process(_speech_like(amplitude=0.12), robot_activity=True)
     strong_update = strong_detector.process(silence, robot_activity=True)
 
-    assert weak_update.completed_turns == []
+    assert len(weak_update.completed_turns) == 1
     assert len(strong_update.completed_turns) == 1
+
+
+def test_robot_activity_allows_high_snr_barge_in_with_moderate_speech_ratio() -> None:
+    """Clear human speech during robot activity should not be dropped solely below the 0.75 ratio."""
+    detector = _detector()
+    speech_indexes = {*range(60), 99}
+    frame_audio = np.zeros(detector.config.frame_samples, dtype=np.int16)
+    detector._segment = [
+        _BufferedFrame(frame_audio, _stats(speech_like=index in speech_indexes)) for index in range(100)
+    ]
+    detector._speech_frame_indexes = sorted(speech_indexes)
+
+    result = detector._finish_segment()
+
+    assert isinstance(result, LocalCompletedTurn)
+    assert result.speech_ratio == pytest.approx(0.61)
+    assert result.avg_snr_db == pytest.approx(28.2)
+    assert result.robot_activity is True
+
+
+def test_robot_activity_allows_sustained_barge_in_with_moderate_snr() -> None:
+    """Sustained human-like speech should survive the robot-activity gate around observed live values."""
+    detector = _detector()
+    speech_indexes = {*range(51), 93}
+    frame_audio = np.zeros(detector.config.frame_samples, dtype=np.int16)
+    detector._segment = [
+        _BufferedFrame(frame_audio, _stats(speech_like=index in speech_indexes, snr_db=21.8))
+        for index in range(94)
+    ]
+    detector._speech_frame_indexes = sorted(speech_indexes)
+
+    result = detector._finish_segment()
+
+    assert isinstance(result, LocalCompletedTurn)
+    assert result.duration_s == pytest.approx(1.88)
+    assert round(result.speech_ratio, 2) == 0.55
+    assert result.avg_snr_db == pytest.approx(21.8)
+
+
+def test_robot_activity_allows_high_snr_barge_in_with_choppy_ratio() -> None:
+    """Very high-SNR speech should pass even when robot activity makes frame ratio choppy."""
+    detector = _detector()
+    speech_indexes = {*range(39), 79}
+    frame_audio = np.zeros(detector.config.frame_samples, dtype=np.int16)
+    detector._segment = [
+        _BufferedFrame(frame_audio, _stats(speech_like=index in speech_indexes, snr_db=27.3))
+        for index in range(80)
+    ]
+    detector._speech_frame_indexes = sorted(speech_indexes)
+
+    result = detector._finish_segment()
+
+    assert isinstance(result, LocalCompletedTurn)
+    assert result.duration_s == pytest.approx(1.60)
+    assert round(result.speech_ratio, 2) == 0.50
+    assert result.avg_snr_db == pytest.approx(27.3)
+
+
+def test_low_confidence_speech_segment_goes_to_stt() -> None:
+    """Low-ratio, low-SNR speech-bearing segments should reach STT instead of being dropped."""
+    detector = _detector()
+    speech_indexes = {*range(20), 88}
+    frame_audio = np.zeros(detector.config.frame_samples, dtype=np.int16)
+    detector._segment = [
+        _BufferedFrame(frame_audio, _stats(speech_like=index in speech_indexes, snr_db=5.6))
+        for index in range(89)
+    ]
+    detector._speech_frame_indexes = sorted(speech_indexes)
+
+    result = detector._finish_segment()
+
+    assert isinstance(result, LocalCompletedTurn)
+    assert result.duration_s == pytest.approx(1.78)
+    assert round(result.speech_ratio, 2) == 0.24
+    assert result.avg_snr_db == pytest.approx(5.6)
+    assert result.robot_activity is True
 
 
 @pytest.mark.asyncio

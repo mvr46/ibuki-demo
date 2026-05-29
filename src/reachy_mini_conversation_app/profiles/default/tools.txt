@@ -4,6 +4,7 @@ play_emotion
 stop_emotion
 camera
 who_is_here
+who_am_i
 remember_person
 look_at_person
 idle_do_nothing

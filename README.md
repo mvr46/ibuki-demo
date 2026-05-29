@@ -144,7 +144,7 @@ Copy `.env.example` to `.env` when you want to switch to Hugging Face fallback, 
 | `OLLAMA_MODEL` | Ollama model for local chat/vision, defaults to `gemma3:latest`. Run `ollama pull gemma3` before using the optimized local backend. |
 | `OLLAMA_ROUTER_MODEL` | Compact Ollama model for local tool routing, defaults to `qwen3.5:4b`. Run `ollama pull qwen3.5:4b` for local robot tools. |
 | `LOCAL_STT_MODEL` | MLX Whisper model for local STT, defaults to `mlx-community/whisper-small-mlx`. |
-| `PIPER_VOICE` | Required Piper `.onnx` voice model path for local TTS, for example `./cache/piper-voices/en_US-lessac-medium.onnx`. The local backend will report an error instead of falling back to macOS `say` when this is missing. |
+| `PIPER_VOICE` | Piper `.onnx` voice model path for local TTS, for example `./cache/piper-voices/en_US-lessac-medium.onnx`. If unset, the app uses `./cache/piper-voices/en_US-lessac-medium.onnx` when that file exists. |
 
 ### Hugging Face Connection Modes
 
@@ -208,13 +208,13 @@ The app runs through the local robot audio stream. When launched as a Reachy Min
 |--------|---------|-------------|
 | `--head-tracker {yolo,mediapipe}` | `None` | Select a visual head-tracking backend when a camera is available. `yolo` uses local YOLO face detection; DoA/spatial-audio steering is deprecated and disabled. `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
-| `--media-backend {auto,default,local,webrtc,no_media}` | `auto` | Select the Reachy Mini SDK media backend. Use `no_media` for headless runs when camera/audio hardware is unavailable. In this app, `no_media` also disables camera, head tracking, and local vision. |
+| `--media-backend {auto,default,local,webrtc,no_media}` | `webrtc` | Select the Reachy Mini SDK media backend. The default uses WebRTC media over the direct wired Ethernet LAN setup. Use `local` only when the app runs on the same machine as the daemon IPC/audio devices. Use `no_media` for headless runs when camera/audio hardware is unavailable. In this app, `no_media` also disables camera, head tracking, and local vision. |
 | `--local-vision` | `False` | Use the local vision model (SmolVLM2) for camera-tool requests instead of the selected realtime backend. Requires `local_vision` extra to be installed. |
 | `--connection-mode {auto,localhost_only,network}` | `network` | Select how the Reachy Mini SDK connects to the daemon. Defaults to `network` so camera/audio media streams come from the robot daemon. Use `localhost_only` for local development daemons. |
 | `--robot-host HOST` | `None` | Reachy Mini daemon hostname or IP address when using `--connection-mode network`. |
 | `--robot-port PORT` | `None` | Reachy Mini daemon port. Uses the SDK default when omitted. |
 | `--robot-name` | `None` | Optional. Connect to a specific robot by name when running multiple daemons on the same subnet. See [Multiple robots on the same subnet](#advanced-features). |
-| `--hardware-profile {auto,mac-mini-wired,legacy}` | `auto` | Select hardware transport behavior. `auto` prefers `10.42.0.2` when reachable; `legacy` preserves Wi-Fi media host behavior. |
+| `--hardware-profile {auto,mac-mini-wired,legacy}` | `mac-mini-wired` | Select hardware transport behavior. The default uses the direct wired Ethernet LAN at `10.42.0.2`; `legacy` preserves Wi-Fi media host behavior. |
 | `--debug` | `False` | Enable verbose logging for troubleshooting. |
 
 ### Examples

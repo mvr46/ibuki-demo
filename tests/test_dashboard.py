@@ -164,6 +164,8 @@ def test_dashboard_log_buffer_limits_and_formats_sse() -> None:
     assert first not in snapshot
     assert [event.id for event in snapshot] == [second.id, third.id]
     assert classify_log("reachy_mini_conversation_app.vision.camera_worker", "frame ready") == "VISION"
+    assert classify_log("reachy_mini_conversation_app.backends.local_conversation", "STT transcript text='hi'") == "VOICE"
+    assert classify_log("reachy_mini_conversation_app.backends.local_conversation", "TTS synth start text='hi'") == "VOICE"
     payload = sse_event(third)
     assert f"id: {third.id}" in payload
     assert "event: log" in payload

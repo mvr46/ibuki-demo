@@ -103,6 +103,8 @@ export type ProcessStatus = {
   defaultRobotPort: string;
   defaultRobotName: string;
   defaultHeadTracker: string;
+  defaultMediaBackend: string;
+  defaultHardwareProfile: string;
   startedAt: string | null;
   exitedAt: string | null;
   exitCode: number | null;

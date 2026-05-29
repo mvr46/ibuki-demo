@@ -48,10 +48,8 @@ def test_legacy_profile_keeps_daemon_wlan_preference() -> None:
     assert result.media_host_source == "daemon_wlan_ip"
 
 
-def test_hardware_profile_defaults_to_wired_host_when_reachable(monkeypatch) -> None:
-    """The optimized profile should use the wired Reachy host by default."""
-    monkeypatch.setattr("reachy_mini_conversation_app.runtime.transport.probe_host", lambda host, port: True)
-
+def test_hardware_profile_defaults_to_wired_host() -> None:
+    """Optimized profiles should use the wired Reachy host by default."""
     assert default_robot_host_for_profile(HARDWARE_PROFILE_AUTO) == "10.42.0.2"
     assert default_robot_host_for_profile(HARDWARE_PROFILE_MAC_MINI_WIRED) == "10.42.0.2"
     assert default_robot_host_for_profile(HARDWARE_PROFILE_LEGACY) is None

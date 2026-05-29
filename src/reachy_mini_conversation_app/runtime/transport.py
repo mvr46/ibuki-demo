@@ -60,12 +60,10 @@ def default_robot_host_for_profile(
     port: int = 8000,
     wired_host: str = DEFAULT_WIRED_REACHY_HOST,
 ) -> str | None:
-    """Return an auto-selected robot host for an optimized hardware profile."""
+    """Return the direct wired-LAN robot host for optimized hardware profiles."""
     if hardware_profile == HARDWARE_PROFILE_LEGACY:
         return None
-    if hardware_profile == HARDWARE_PROFILE_MAC_MINI_WIRED:
-        return wired_host
-    if hardware_profile == HARDWARE_PROFILE_AUTO and probe_host(wired_host, port):
+    if hardware_profile in {HARDWARE_PROFILE_AUTO, HARDWARE_PROFILE_MAC_MINI_WIRED}:
         return wired_host
     return None
 
@@ -105,4 +103,3 @@ def resolve_transport(
         media_host_source=media_host_source,
         hardware_profile=hardware_profile,
     )
-

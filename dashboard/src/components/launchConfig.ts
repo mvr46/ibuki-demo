@@ -5,10 +5,11 @@ import type { LaunchConfig, ProcessStatus } from "../types.ts";
 const LS_KEY = "reachy-dashboard.launch-config";
 const LEGACY_HOST = "reachy-dashboard.robot-host";
 const LEGACY_PORT = "reachy-dashboard.robot-port";
+const LAUNCH_CONFIG_VERSION = 5;
 
 export function persistLaunchConfig(): void {
   try {
-    window.localStorage.setItem(LS_KEY, JSON.stringify(state.launchConfig));
+    window.localStorage.setItem(LS_KEY, JSON.stringify({ ...state.launchConfig, version: LAUNCH_CONFIG_VERSION }));
   } catch {
     // storage unavailable; keep in-memory config
   }
@@ -18,8 +19,35 @@ export function loadPersistedLaunchConfig(): void {
   const raw = window.localStorage.getItem(LS_KEY);
   if (raw) {
     try {
-      const parsed = JSON.parse(raw) as Partial<LaunchConfig>;
-      state.launchConfig = { ...state.launchConfig, ...parsed };
+      const parsed = JSON.parse(raw) as Partial<LaunchConfig> & { version?: number };
+      const storedVersion = typeof parsed.version === "number" ? parsed.version : 0;
+      const storedConfig: Partial<LaunchConfig> & { version?: number } = { ...parsed };
+      delete storedConfig.version;
+      state.launchConfig = { ...state.launchConfig, ...storedConfig };
+      if (
+        storedVersion < LAUNCH_CONFIG_VERSION &&
+        (state.launchConfig.mediaBackend === "auto" || state.launchConfig.mediaBackend === "local")
+      ) {
+        state.launchConfig.mediaBackend = "webrtc";
+        persistLaunchConfig();
+      }
+      if (storedVersion < LAUNCH_CONFIG_VERSION && state.launchConfig.hardwareProfile === "auto") {
+        state.launchConfig.hardwareProfile = "mac-mini-wired";
+        persistLaunchConfig();
+      }
+      if (storedVersion < LAUNCH_CONFIG_VERSION && state.launchConfig.localVision) {
+        state.launchConfig.localVision = false;
+        persistLaunchConfig();
+      }
+      if (
+        storedVersion < LAUNCH_CONFIG_VERSION &&
+        state.launchConfig.rawOverride.trim() &&
+        (state.launchConfig.rawOverride.includes("reachy-mini-conversation-app") ||
+          state.launchConfig.rawOverride.includes("reachy_mini_conversation_app.main"))
+      ) {
+        state.launchConfig.rawOverride = "";
+        persistLaunchConfig();
+      }
       state.defaultsSeeded = true;
       return;
     } catch {
@@ -48,6 +76,14 @@ export function seedLaunchDefaults(process: ProcessStatus): void {
   if (cfg.headTracker === "off" && (tracker === "yolo" || tracker === "mediapipe")) {
     cfg.headTracker = tracker;
   }
+  const mediaBackend = (process.defaultMediaBackend || "").toLowerCase();
+  if (["auto", "default", "local", "webrtc", "no_media"].includes(mediaBackend)) {
+    cfg.mediaBackend = mediaBackend as LaunchConfig["mediaBackend"];
+  }
+  const hardwareProfile = (process.defaultHardwareProfile || "").toLowerCase();
+  if (["auto", "mac-mini-wired", "legacy"].includes(hardwareProfile)) {
+    cfg.hardwareProfile = hardwareProfile as LaunchConfig["hardwareProfile"];
+  }
   state.defaultsSeeded = true;
 }
 
@@ -63,7 +99,7 @@ function baseTokens(defaultCommand: string): string[] {
     if (token.startsWith("--")) break;
     base.push(token);
   }
-  if (!base.length) return ["uv", "run", "python", "-m", "reachy_mini_conversation_app.main"];
+  if (!base.length) return ["REACHY_DASHBOARD_SERVER=1", "uv", "run", "reachy-mini-conversation-app"];
   return base;
 }
 

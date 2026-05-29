@@ -9,12 +9,17 @@ import threading
 from typing import Any, Callable
 from datetime import datetime, timezone
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import field, dataclass
+
+from fastapi import Request
 
 from reachy_mini_conversation_app.vision.camera_frame_encoding import encode_bgr_frame_as_jpeg
 
 
 logger = logging.getLogger(__name__)
+
+DASHBOARD_RUNTIME_STATE_ATTR = "_reachy_mini_dashboard_runtime_state"
+DASHBOARD_ROUTES_MOUNTED_ATTR = "_reachy_mini_dashboard_routes_mounted"
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,40 @@ class DashboardLogBuffer(logging.Handler):
                 self._condition.wait(remaining)
 
 
+@dataclass
+class DashboardRuntimeState:
+    """Mutable route providers used while the app moves from startup to runtime."""
+
+    logs: DashboardLogBuffer = field(default_factory=DashboardLogBuffer)
+    deps_provider: Callable[[], Any] = lambda: None
+    backend_status_provider: Callable[[], dict[str, object]] = lambda: {}
+
+    def get_deps(self) -> Any:
+        """Return current tool dependencies, if runtime has created them."""
+        return self.deps_provider()
+
+    def get_backend_status(self) -> dict[str, object]:
+        """Return current backend status."""
+        return self.backend_status_provider()
+
+
+def ensure_dashboard_runtime_state(app: Any, *, logs: DashboardLogBuffer | None = None) -> DashboardRuntimeState:
+    """Return the shared dashboard runtime state attached to a FastAPI app."""
+    holder = getattr(app, "state", app)
+    existing = getattr(holder, DASHBOARD_RUNTIME_STATE_ATTR, None)
+    if isinstance(existing, DashboardRuntimeState):
+        return existing
+    state = DashboardRuntimeState(logs=logs or DashboardLogBuffer())
+    setattr(holder, DASHBOARD_RUNTIME_STATE_ATTR, state)
+    return state
+
+
+def dashboard_routes_mounted(app: Any) -> bool:
+    """Return whether dashboard routes have already been registered."""
+    holder = getattr(app, "state", app)
+    return bool(getattr(holder, DASHBOARD_ROUTES_MOUNTED_ATTR, False))
+
+
 def mount_dashboard_routes(
     app: Any,
     *,
@@ -128,11 +167,14 @@ def mount_dashboard_routes(
     logs: DashboardLogBuffer,
 ) -> None:
     """Register static dashboard API routes on a FastAPI app."""
+    if dashboard_routes_mounted(app):
+        return
     try:
-        from fastapi import Body, Request
+        from fastapi import Body
         from fastapi.responses import Response, JSONResponse, StreamingResponse
     except Exception:  # pragma: no cover - FastAPI is optional outside the app runtime
         return
+    setattr(getattr(app, "state", app), DASHBOARD_ROUTES_MOUNTED_ATTR, True)
 
     def _camera_worker() -> Any | None:
         deps = get_deps()
@@ -265,8 +307,11 @@ def mount_dashboard_routes(
         return JSONResponse({"ok": True, **result})
 
     @app.get("/api/dashboard/events")  # type: ignore[misc]
-    async def _dashboard_events(request: Request, last_id: int = 0) -> StreamingResponse:
-        initial_last_id = max(0, int(last_id))
+    async def _dashboard_events(request: Request, last_id: str | None = None) -> StreamingResponse:
+        try:
+            initial_last_id = max(0, int(last_id or 0))
+        except ValueError:
+            initial_last_id = 0
         if initial_last_id == 0:
             try:
                 initial_last_id = max(0, int(request.headers.get("last-event-id", "0")))
@@ -348,7 +393,15 @@ def classify_log(logger_name: str, message: str) -> str:
         return "TOOL"
     if "openai" in lowered or "gemini" in lowered or "huggingface" in lowered or "realtime" in lowered:
         return "LLM"
-    if "audio" in lowered or "voice" in lowered or "speech" in lowered:
+    if (
+        "audio" in lowered
+        or "voice" in lowered
+        or "speech" in lowered
+        or "stt" in lowered
+        or "tts" in lowered
+        or "vad" in lowered
+        or "transcript" in lowered
+    ):
         return "VOICE"
     if "movement" in lowered or "motion" in lowered or "head" in lowered:
         return "MOTION"

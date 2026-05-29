@@ -17,7 +17,13 @@ from reachy_mini_conversation_app.profiles.prompts import get_session_voice, get
 from reachy_mini_conversation_app.tools.core_tools import (
     ToolDependencies,
     dispatch_tool_call,
+    dispatch_tool_call_with_manager,
     get_active_tool_specs,
+)
+from reachy_mini_conversation_app.tools.tool_constants import SystemTool
+from reachy_mini_conversation_app.tools.background_tool_manager import (
+    ToolNotification,
+    BackgroundToolManager,
 )
 from reachy_mini_conversation_app.runtime.streaming import AdditionalOutputs, wait_for_item, audio_to_int16
 from reachy_mini_conversation_app.backends.interface import ConversationHandler
@@ -89,10 +95,14 @@ class LocalConversationHandler(ConversationHandler):
         self._clear_queue = None
         self._stop_event = asyncio.Event()
         self._processing_task: asyncio.Task[None] | None = None
+        self._perception_task: asyncio.Task[None] | None = None
+        self.tool_manager = BackgroundToolManager()
         self._robot_noise_until = 0.0
         self._silence_seconds = silence_seconds
         self._min_speech_seconds = min_speech_seconds
         self._speech_rms_threshold = speech_rms_threshold
+        self._max_messages = 40
+        self._max_ambient_messages = 8
         self._messages: list[dict[str, Any]] = [
             {"role": "system", "content": get_session_instructions()},
         ]
@@ -116,16 +126,36 @@ class LocalConversationHandler(ConversationHandler):
     async def start_up(self) -> None:
         """Prepare local conversation state."""
         logger.info("Local conversation backend ready.")
+        self.tool_manager.start_up(tool_callbacks=[self._handle_tool_notification])
+        if self.deps.face_identity_worker is not None or self.deps.speaker_attribution_worker is not None:
+            from reachy_mini_conversation_app.vision.perception_stream import run_perception_stream
+
+            self._perception_task = asyncio.create_task(
+                run_perception_stream(
+                    self.deps.face_identity_worker,
+                    self,
+                    speaker_attribution_worker=self.deps.speaker_attribution_worker,
+                ),
+                name="local-perception-stream",
+            )
 
     async def shutdown(self) -> None:
         """Stop local processing."""
         self._stop_event.set()
+        if self._perception_task is not None and not self._perception_task.done():
+            self._perception_task.cancel()
+            try:
+                await self._perception_task
+            except asyncio.CancelledError:
+                pass
+            self._perception_task = None
         if self._processing_task is not None and not self._processing_task.done():
             self._processing_task.cancel()
             try:
                 await self._processing_task
             except asyncio.CancelledError:
                 pass
+        await self.tool_manager.shutdown()
         while not self.output_queue.empty():
             try:
                 self.output_queue.get_nowait()
@@ -185,7 +215,7 @@ class LocalConversationHandler(ConversationHandler):
 
     async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
         """Inject context into local chat history."""
-        self._messages.append({"role": "system", "content": text})
+        self._append_message({"role": "system", "content": text})
         if trigger_response:
             self._processing_task = asyncio.create_task(self._respond_to_current_messages(), name="local-env-response")
 
@@ -194,16 +224,19 @@ class LocalConversationHandler(ConversationHandler):
         diagnostics = getattr(self.deps, "performance_diagnostics", None)
         try:
             stt_start = time.perf_counter()
+            logger.info("STT start duration=%.2fs samples=%d", audio.size / LOCAL_INPUT_SAMPLE_RATE, audio.size)
             transcript = await self.stt_adapter.transcribe(audio, LOCAL_INPUT_SAMPLE_RATE)
             stt_ms = (time.perf_counter() - stt_start) * 1000
             _record_turn_metrics(diagnostics, stt_ms=stt_ms)
             if not transcript:
                 reason = str(getattr(self.stt_adapter, "last_reject_reason", None) or "empty_transcript")
                 _record_rejected_segment(diagnostics, reason=reason, source="stt")
+                logger.info("STT rejected reason=%s latency=%.0fms", reason, stt_ms)
                 return
+            logger.info("STT transcript latency=%.0fms text=%r", stt_ms, _truncate_for_log(transcript))
             self._notify("notify_user_transcript", transcript)
             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
-            self._messages.append({"role": "user", "content": transcript})
+            self._append_message({"role": "user", "content": transcript})
             await self._respond_to_current_messages(turn_started=started)
         finally:
             self._processing_task = None
@@ -236,26 +269,34 @@ class LocalConversationHandler(ConversationHandler):
         diagnostics = getattr(self.deps, "performance_diagnostics", None)
         _record_turn_metrics(diagnostics, llm_first_token_ms=llm_total_ms, llm_total_ms=llm_total_ms)
         if not response_text:
-            return
+            logger.info("Local LLM returned empty response for user_text=%r", _truncate_for_log(latest_user_text))
+            response_text = "I heard you, but my local model came back empty. Try that once more?"
 
         await self._speak_response(response_text, turn_started=turn_started)
 
     async def _speak_response(self, response_text: str, *, turn_started: float | None = None) -> None:
         """Emit assistant text and synthesize local Piper audio."""
-        spoken_text = _strip_ambient_context_prefix(response_text)
+        spoken_text = _normalize_spoken_text(_strip_ambient_context_prefix(response_text))
         if not spoken_text:
             logger.info("Skipping local response that only echoed ambient context.")
             return
         if spoken_text != response_text:
-            logger.debug("Stripped echoed ambient context from local assistant response.")
-        self._messages.append({"role": "assistant", "content": spoken_text})
+            logger.debug("Normalized local assistant response before speech.")
+        self._append_message({"role": "assistant", "content": spoken_text})
         await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": spoken_text}))
+        logger.info("TTS synth start text=%r", _truncate_for_log(spoken_text))
         tts_start = time.perf_counter()
         sample_rate, audio = await self.tts_adapter.synthesize(spoken_text)
         tts_ms = (time.perf_counter() - tts_start) * 1000
         first_audio_ms = (time.perf_counter() - turn_started) * 1000 if turn_started is not None else None
         diagnostics = getattr(self.deps, "performance_diagnostics", None)
         _record_turn_metrics(diagnostics, tts_ms=tts_ms, first_audio_ms=first_audio_ms)
+        logger.info(
+            "TTS synth done latency=%.0fms first_audio=%s samples=%d",
+            tts_ms,
+            "n/a" if first_audio_ms is None else f"{first_audio_ms:.0f}ms",
+            audio.size,
+        )
         if audio.size:
             self._extend_robot_noise_window((audio.size / max(1, sample_rate)) + 0.3)
             self._notify("notify_assistant_audio_started")
@@ -275,6 +316,13 @@ class LocalConversationHandler(ConversationHandler):
             )
             logger.info("Rejected local turn reason=processing_busy")
             return
+        logger.info(
+            "VAD completed turn duration=%.2fs speech_ratio=%.2f snr=%.1fdB robot_activity=%s",
+            completed_turn.duration_s,
+            completed_turn.speech_ratio,
+            completed_turn.avg_snr_db,
+            completed_turn.robot_activity,
+        )
         self._processing_task = asyncio.create_task(self._process_turn(completed_turn.audio), name="local-turn")
 
     def _handle_rejected_turn(self, rejected_turn: LocalRejectedTurn) -> None:
@@ -290,11 +338,12 @@ class LocalConversationHandler(ConversationHandler):
             avg_snr_db=rejected_turn.avg_snr_db,
         )
         logger.info(
-            "Rejected local audio segment reason=%s duration=%.2fs speech_ratio=%.2f snr=%.1fdB",
+            "VAD rejected local audio segment reason=%s duration=%.2fs speech_ratio=%.2f snr=%.1fdB robot_activity=%s",
             rejected_turn.reason,
             rejected_turn.duration_s,
             rejected_turn.speech_ratio,
             rejected_turn.avg_snr_db,
+            rejected_turn.robot_activity,
         )
 
     async def _execute_routed_tool_call(self, tool_call: dict[str, Any]) -> str:
@@ -304,7 +353,12 @@ class LocalConversationHandler(ConversationHandler):
         arguments: dict[str, Any] = (
             {str(key): value for key, value in raw_arguments.items()} if isinstance(raw_arguments, dict) else {}
         )
-        result = await dispatch_tool_call(name, json.dumps(arguments), self.deps)
+        logger.info("Tool call executing name=%s args=%s", name, arguments)
+        if name in {tool.value for tool in SystemTool}:
+            result = await dispatch_tool_call_with_manager(name, json.dumps(arguments), self.deps, self.tool_manager)
+        else:
+            result = await dispatch_tool_call(name, json.dumps(arguments), self.deps)
+        logger.info("Tool call result name=%s summary=%s", name, _truncate_for_log(json.dumps(result, default=str)))
         self._extend_robot_noise_window(_tool_noise_window_s(name, arguments, result))
         await self.output_queue.put(
             AdditionalOutputs(
@@ -316,6 +370,39 @@ class LocalConversationHandler(ConversationHandler):
             )
         )
         return _tool_ack_text(name, arguments, result)
+
+    async def _handle_tool_notification(self, notification: ToolNotification) -> None:
+        """Log completed background-tool notifications for local manager visibility."""
+        logger.info(
+            "Background tool notification name=%s status=%s result=%s error=%s",
+            notification.tool_name,
+            notification.status.value,
+            _truncate_for_log(json.dumps(notification.result, default=str)) if notification.result else None,
+            notification.error,
+        )
+
+    def _append_message(self, message: dict[str, Any]) -> None:
+        """Append chat context while bounding stale ambient messages."""
+        self._messages.append(message)
+        self._trim_context_history()
+
+    def _trim_context_history(self) -> None:
+        """Keep local context small and avoid stale ambient identity claims."""
+        if not self._messages:
+            return
+        first = self._messages[0]
+        rest = self._messages[1:]
+        ambient_indexes = [
+            index
+            for index, item in enumerate(rest)
+            if item.get("role") == "system" and _is_ambient_context(str(item.get("content") or ""))
+        ]
+        if len(ambient_indexes) > self._max_ambient_messages:
+            drop = set(ambient_indexes[: len(ambient_indexes) - self._max_ambient_messages])
+            rest = [item for index, item in enumerate(rest) if index not in drop]
+        if len(rest) > self._max_messages - 1:
+            rest = rest[-(self._max_messages - 1) :]
+        self._messages = [first, *rest]
 
     def _extend_robot_noise_window(self, duration_s: float) -> None:
         """Suppress robot-generated mic artifacts for at least the given duration."""
@@ -358,9 +445,6 @@ class LocalConversationHandler(ConversationHandler):
         if callable(set_voice_activity):
             payload = self.turn_detector.snapshot()
             stats = self.turn_detector.last_frame_stats
-            if activity.get("active") and stats is not None and not stats.speech_like and stats.noise_class != "quiet":
-                payload["last_vad_reject_reason"] = "robot_noise_suppressed"
-                payload["last_reject_reason"] = "robot_noise_suppressed"
             set_voice_activity(**payload, **activity)
 
     def _notify(self, method_name: str, *args: Any) -> None:
@@ -438,6 +522,22 @@ def _strip_ambient_context_prefix(text: str) -> str:
     return AMBIENT_CONTEXT_PREFIX_RE.sub("", text).strip()
 
 
+def _normalize_spoken_text(text: str) -> str:
+    """Remove lightweight Markdown that speech engines read aloud awkwardly."""
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        line = re.sub(r"^(?:[*+-]|\d+[.)])\s+", "", line)
+        if line:
+            lines.append(line)
+    cleaned = " ".join(lines) if lines else text.strip()
+    cleaned = re.sub(r"\s+(?:[*+-]|\d+[.)])\s+", " ", cleaned)
+    cleaned = re.sub(r"(?<!\w)[*_]{1,3}(?=\w)", "", cleaned)
+    cleaned = re.sub(r"(?<=\w)[*_]{1,3}(?!\w)", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def _camera_tracking_offsets(camera_worker: object | None) -> tuple[float, ...]:
     """Return current tracking offsets if a camera worker exposes them."""
     if camera_worker is None:
@@ -488,6 +588,37 @@ def _tool_ack_text(name: str, arguments: dict[str, Any], result: dict[str, Any])
     """Return a short templated acknowledgement for a routed local tool."""
     if result.get("error"):
         return f"I couldn't complete that: {result['error']}"
+    if name == "who_am_i":
+        identity = str(result.get("name") or "").strip()
+        if identity:
+            return f"You look like {identity}."
+        message = str(result.get("message") or "").strip()
+        return message or "I can't tell who you are yet."
+    if name == "who_is_here":
+        people = result.get("people")
+        if not isinstance(people, list) or not people:
+            return "I don't see anyone I can identify right now."
+        named = [str(person.get("name")) for person in people if isinstance(person, dict) and person.get("name")]
+        unknown_count = sum(1 for person in people if isinstance(person, dict) and not person.get("name"))
+        unknown_label = "unknown person" if unknown_count == 1 else "unknown people"
+        if named and unknown_count:
+            return f"I see {', '.join(named)} and {unknown_count} {unknown_label}."
+        if named:
+            return f"I see {', '.join(named)}."
+        return f"I see {unknown_count} {unknown_label}."
+    if name == "camera":
+        description = str(result.get("image_description") or "").strip()
+        if description:
+            return description
+        if result.get("b64_im"):
+            return "I took a picture, but I need a vision answer to describe it."
+    if name == "task_status":
+        status = str(result.get("status") or "").strip()
+        message = str(result.get("message") or "").strip()
+        if message:
+            return message
+        if status:
+            return f"Task status: {status}."
     if name == "look_at_person":
         person = str(result.get("name") or arguments.get("name") or "").strip()
         return f"Okay, looking at {person}." if person else "Okay, looking there."
@@ -505,6 +636,17 @@ def _tool_ack_text(name: str, arguments: dict[str, Any], result: dict[str, Any])
     if name.startswith("stop_"):
         return "Okay, stopping that."
     return "Okay, done."
+
+
+def _is_ambient_context(text: str) -> bool:
+    """Return whether text is generated perception context."""
+    return bool(AMBIENT_CONTEXT_PREFIX_RE.match(text))
+
+
+def _truncate_for_log(value: str, limit: int = 220) -> str:
+    """Return compact text for log events."""
+    cleaned = " ".join(str(value).split())
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "..."
 
 
 def _record_turn_metrics(

@@ -33,6 +33,12 @@ def _resolve_default_profiles_directory() -> Path:
 
 
 DEFAULT_PROFILES_DIRECTORY = _resolve_default_profiles_directory()
+DEFAULT_PIPER_VOICE_PATH = PROJECT_ROOT / "cache" / "piper-voices" / "en_US-lessac-medium.onnx"
+
+
+def _default_piper_voice() -> str | None:
+    """Return the bundled/downloaded default Piper voice path when available."""
+    return str(DEFAULT_PIPER_VOICE_PATH) if DEFAULT_PIPER_VOICE_PATH.is_file() else None
 
 # Full list of voices supported by the OpenAI Realtime / TTS API.
 # Source: https://developers.openai.com/api/docs/guides/text-to-speech/#voice-options
@@ -353,7 +359,7 @@ class Config:
     LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
     LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
     LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")
-    PIPER_VOICE = os.getenv("PIPER_VOICE")
+    PIPER_VOICE = os.getenv("PIPER_VOICE") or _default_piper_voice()
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
@@ -410,7 +416,7 @@ def refresh_runtime_config_from_env() -> None:
     config.LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
     config.LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
     config.LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")
-    config.PIPER_VOICE = os.getenv("PIPER_VOICE")
+    config.PIPER_VOICE = os.getenv("PIPER_VOICE") or _default_piper_voice()
     config.HF_HOME = os.getenv("HF_HOME", "./cache")
     config.LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     config.HF_TOKEN = os.getenv("HF_TOKEN")

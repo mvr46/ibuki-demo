@@ -9,6 +9,7 @@ import pytest
 
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies, get_active_tool_specs
 from reachy_mini_conversation_app.tools.who_is_here import WhoIsHere
+from reachy_mini_conversation_app.tools.who_am_i import WhoAmI
 from reachy_mini_conversation_app.tools.look_at_person import LookAtPerson
 from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget
@@ -40,6 +41,14 @@ class _FakeIdentityWorker:
         return SimpleNamespace(visible=tuple(self.identified))
 
 
+class _FakeSpeakerWorker:
+    def __init__(self, segments: list[SimpleNamespace]) -> None:
+        self.segments = segments
+
+    def snapshot(self) -> tuple[SimpleNamespace, ...]:
+        return tuple(self.segments)
+
+
 def _target(x_offset: float, area: float = 0.09) -> HeadTrackerTarget:
     side = area**0.5
     return HeadTrackerTarget(
@@ -51,7 +60,20 @@ def _target(x_offset: float, area: float = 0.09) -> HeadTrackerTarget:
     )
 
 
-def _deps(identity_worker: object | None) -> ToolDependencies:
+def _identified(name: str | None, x_offset: float = 0.0, similarity: float = 0.86) -> IdentifiedTarget:
+    return IdentifiedTarget(
+        target=_target(x_offset),
+        name=name,
+        similarity=similarity,
+        embedding=np.array([1.0, 0.0], dtype=np.float32),
+    )
+
+
+def _speech(name: str | None, confidence: float = 0.91, suppressed: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(person_name=name, confidence=confidence, self_speech_suppressed=suppressed)
+
+
+def _deps(identity_worker: object | None, speaker_worker: object | None = None) -> ToolDependencies:
     head_tracker = MagicMock()
     head_tracker.get_head_targets.return_value = [_target(0.0)]
     camera_worker = MagicMock()
@@ -62,6 +84,7 @@ def _deps(identity_worker: object | None) -> ToolDependencies:
         movement_manager=MagicMock(),
         camera_worker=camera_worker,
         face_identity_worker=identity_worker,
+        speaker_attribution_worker=speaker_worker,
     )
 
 
@@ -90,6 +113,78 @@ async def test_who_is_here_lists_identified_people() -> None:
             "seconds_in_view": 0.0,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_who_am_i_uses_latest_named_speaker_attribution_first() -> None:
+    """who_am_i should prefer the latest attributed named speaker over visible faces."""
+    deps = _deps(
+        _FakeIdentityWorker([_identified("Alice")]),
+        speaker_worker=_FakeSpeakerWorker([_speech("Alice", 0.7), _speech("Matteo", 0.93)]),
+    )
+
+    result = await WhoAmI()(deps)
+
+    assert result["status"] == "identified"
+    assert result["name"] == "Matteo"
+    assert result["source"] == "speaker_attribution"
+    assert result["confidence"] == 0.93
+
+
+@pytest.mark.asyncio
+async def test_who_am_i_uses_focused_visible_face() -> None:
+    """who_am_i should use the currently focused named face when there is no speaker attribution."""
+    deps = _deps(_FakeIdentityWorker([_identified("Alice", -0.25), _identified("Bob", 0.25, 0.78)]))
+    deps.camera_worker.get_speaker_focus_name.return_value = "bob"
+
+    result = await WhoAmI()(deps)
+
+    assert result["status"] == "identified"
+    assert result["name"] == "Bob"
+    assert result["source"] == "focused_visible_face"
+    assert result["visible_names"] == ["Alice", "Bob"]
+
+
+@pytest.mark.asyncio
+async def test_who_am_i_uses_single_visible_person() -> None:
+    """who_am_i should identify the only named visible person."""
+    result = await WhoAmI()(_deps(_FakeIdentityWorker([_identified("Alice", similarity=0.81234)])))
+
+    assert result["status"] == "identified"
+    assert result["name"] == "Alice"
+    assert result["source"] == "single_visible_face"
+    assert result["confidence"] == 0.812
+
+
+@pytest.mark.asyncio
+async def test_who_am_i_reports_multiple_visible_people() -> None:
+    """who_am_i should refuse to guess when multiple named people are visible."""
+    result = await WhoAmI()(_deps(_FakeIdentityWorker([_identified("Alice", -0.2), _identified("Bob", 0.2)])))
+
+    assert result["status"] == "ambiguous"
+    assert result["name"] is None
+    assert result["visible_names"] == ["Alice", "Bob"]
+    assert "can't tell which one" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_who_am_i_reports_unknown_visible_face() -> None:
+    """who_am_i should acknowledge visible unknown faces without inventing a name."""
+    result = await WhoAmI()(_deps(_FakeIdentityWorker([_identified(None)])))
+
+    assert result["status"] == "unknown"
+    assert result["source"] == "unknown_visible_faces"
+    assert result["unknown_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_who_am_i_reports_unknown_without_identity_worker() -> None:
+    """who_am_i should remain callable without identity workers and return uncertainty."""
+    result = await WhoAmI()(_deps(None))
+
+    assert result["status"] == "unknown"
+    assert result["source"] == "no_identity_signal"
+    assert result["message"] == "I can't tell who you are yet."
 
 
 @pytest.mark.asyncio
@@ -163,9 +258,11 @@ def test_face_tools_only_active_when_identity_worker_is_wired() -> None:
     active_names = {spec["name"] for spec in get_active_tool_specs(_deps(object()))}
 
     assert "who_is_here" not in inactive_names
+    assert "who_am_i" in inactive_names
     assert "remember_person" not in inactive_names
     assert "look_at_person" not in inactive_names
     assert "who_is_here" in active_names
+    assert "who_am_i" in active_names
     assert "remember_person" in active_names
     assert "look_at_person" in active_names
 
@@ -178,5 +275,6 @@ def test_detection_only_face_worker_keeps_who_is_here_but_hides_identity_tools()
     active_names = {spec["name"] for spec in get_active_tool_specs(_deps(identity_worker))}
 
     assert "who_is_here" in active_names
+    assert "who_am_i" in active_names
     assert "remember_person" not in active_names
     assert "look_at_person" not in active_names

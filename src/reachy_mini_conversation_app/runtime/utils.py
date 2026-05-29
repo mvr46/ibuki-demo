@@ -3,6 +3,7 @@ import sys
 import logging
 import argparse
 import warnings
+import threading
 import subprocess
 from typing import TYPE_CHECKING, Optional
 
@@ -21,6 +22,29 @@ class CameraVisionInitializationError(Exception):
     """Raised when camera or vision setup fails in an expected way."""
 
 
+class LazyVisionProcessor:
+    """Initialize the local VLM only when a camera tool actually needs it."""
+
+    def __init__(self) -> None:
+        """Create an unloaded local vision processor wrapper."""
+        self._processor: VisionProcessor | None = None
+        self._lock = threading.Lock()
+
+    def _get_processor(self) -> VisionProcessor:
+        if self._processor is not None:
+            return self._processor
+        with self._lock:
+            if self._processor is None:
+                from reachy_mini_conversation_app.vision.local_vision import initialize_vision_processor
+
+                self._processor = initialize_vision_processor()
+            return self._processor
+
+    def process_image(self, image: object, prompt: str) -> str:
+        """Analyze an image with the lazily initialized local VLM."""
+        return self._get_processor().process_image(image, prompt)
+
+
 def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     """Parse command line arguments."""
     parser = argparse.ArgumentParser("Reachy Mini Conversation App")
@@ -37,8 +61,8 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     parser.add_argument(
         "--media-backend",
         choices=["auto", "default", "local", "webrtc", "no_media"],
-        default="auto",
-        help="Reachy Mini SDK media backend. Use no_media for headless runs without camera/audio hardware.",
+        default="webrtc",
+        help="Reachy Mini SDK media backend. Defaults to WebRTC over the direct wired-LAN setup; use no_media for headless runs without camera/audio hardware.",
     )
     parser.add_argument(
         "--local-vision",
@@ -77,8 +101,8 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     parser.add_argument(
         "--hardware-profile",
         choices=list(HARDWARE_PROFILES),
-        default="auto",
-        help="Hardware optimization profile. auto prefers the direct Mac/Reachy wired link when available.",
+        default="mac-mini-wired",
+        help="Hardware optimization profile. Defaults to the direct Mac/Reachy wired LAN link at 10.42.0.2.",
     )
     return parser.parse_known_args()
 
@@ -148,19 +172,14 @@ def initialize_camera_and_vision(
                     "Run without --local-vision or install compatible dependencies.",
                 )
             try:
-                from reachy_mini_conversation_app.vision.local_vision import initialize_vision_processor
-
+                __import__("reachy_mini_conversation_app.vision.local_vision", fromlist=["initialize_vision_processor"])
             except ImportError as e:
                 raise CameraVisionInitializationError(
                     "To use --local-vision, please install the extra dependencies: pip install '.[local_vision]'",
                 ) from e
 
-            try:
-                vision_processor = initialize_vision_processor()
-            except ImportError as e:
-                raise CameraVisionInitializationError(
-                    "To use --local-vision, please install the extra dependencies: pip install '.[local_vision]'",
-                ) from e
+            vision_processor = LazyVisionProcessor()
+            logging.getLogger(__name__).info("Local vision enabled; model loading is deferred until first camera-tool use.")
         else:
             logging.getLogger(__name__).info(
                 "Using the selected realtime backend for vision (default). Use --local-vision for local processing.",

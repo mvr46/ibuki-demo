@@ -28,6 +28,9 @@ class LocalToolRoutingResult:
     """One compact local tool-routing decision."""
 
     tool_calls: list[dict[str, Any]]
+    raw_content: str = ""
+    parse_error: bool = False
+    ignored_tool_name: str | None = None
 
 
 class LocalLLMAdapter(Protocol):
@@ -175,19 +178,49 @@ class OllamaToolRouter:
                 self.diagnostics,
                 router_model=self.model,
                 qwen_router_latency_ms=latency_ms,
-                qwen_router_status="error",
+                qwen_router_status="qwen_error",
                 last_ollama_error=str(exc),
             )
             logger.warning("Local Qwen tool router failed: %s", exc)
             return LocalToolRoutingResult(tool_calls=[])
+        if result.tool_calls:
+            status = "qwen_ok"
+        elif result.parse_error:
+            status = "qwen_parse_error"
+        else:
+            status = "qwen_no_tool"
         latency_ms = (asyncio.get_running_loop().time() - started) * 1000
         _record_local_model(
             self.diagnostics,
             router_model=self.model,
             qwen_router_latency_ms=latency_ms,
-            qwen_router_status="ok" if result.tool_calls else "no_tool",
-            last_ollama_error=None,
+            qwen_router_status=status,
+            last_ollama_error=result.raw_content if result.parse_error else None,
         )
+        if result.tool_calls:
+            logger.info(
+                "Qwen router selected tool=%s args=%s latency=%.0fms utterance=%r",
+                result.tool_calls[0].get("name"),
+                result.tool_calls[0].get("arguments"),
+                latency_ms,
+                _truncate(user_text, 160),
+            )
+        elif result.parse_error:
+            logger.info(
+                "Qwen router parse failed latency=%.0fms utterance=%r raw=%r",
+                latency_ms,
+                _truncate(user_text, 160),
+                _truncate(result.raw_content, 500),
+            )
+        elif result.ignored_tool_name:
+            logger.info(
+                "Qwen router ignored unavailable tool=%s latency=%.0fms utterance=%r",
+                result.ignored_tool_name,
+                latency_ms,
+                _truncate(user_text, 160),
+            )
+        else:
+            logger.info("Qwen router selected no tool latency=%.0fms utterance=%r", latency_ms, _truncate(user_text, 160))
         return result
 
     def _route_sync(self, user_text: str, tools: list[dict[str, Any]]) -> LocalToolRoutingResult:
@@ -198,26 +231,20 @@ class OllamaToolRouter:
             "think": False,
             "format": _router_output_schema(),
             "options": {
-                "num_predict": 64,
+                "num_predict": 48,
                 "temperature": 0,
             },
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a fast JSON router for Reachy Mini robot tools. "
-                        "Return exactly one JSON object matching the schema. "
-                        "Call at most one tool. Use a tool only when the user asks for a robot action, "
-                        "camera/vision lookup, face/person lookup, memory, dance, emotion, movement, or task status. "
-                        "For ordinary conversation return an empty tool_calls array."
-                    ),
+                    "content": _router_system_prompt(),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
                         {
                             "utterance": user_text,
-                            "available_tools": _compact_tool_specs(tools),
+                            "tools": _compact_tool_specs(tools),
                         },
                         ensure_ascii=True,
                     ),
@@ -232,11 +259,20 @@ class OllamaToolRouter:
         for call in parsed:
             name = str(call.get("name") or "")
             if name not in tool_names:
-                continue
+                return LocalToolRoutingResult(
+                    tool_calls=[],
+                    raw_content=str(content or ""),
+                    parse_error=False,
+                    ignored_tool_name=name or None,
+                )
             arguments = call.get("arguments")
             normalized.append({"name": name, "arguments": arguments if isinstance(arguments, dict) else {}})
             break
-        return LocalToolRoutingResult(tool_calls=normalized)
+        return LocalToolRoutingResult(
+            tool_calls=normalized,
+            raw_content=str(content or ""),
+            parse_error=getattr(parsed, "parse_error", False),
+        )
 
     def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Post a router payload to Ollama."""
@@ -263,23 +299,67 @@ def _parse_chat_response(data: dict[str, Any]) -> LocalLLMResponse:
     )
 
 
-def _parse_router_content(content: object) -> list[dict[str, Any]]:
+class _RouterCalls(list[dict[str, Any]]):
+    """Router calls with parse metadata attached."""
+
+    def __init__(self, calls: list[dict[str, Any]], *, parse_error: bool = False) -> None:
+        """Initialize normalized calls with parse status."""
+        super().__init__(calls)
+        self.parse_error = parse_error
+
+
+def _parse_router_content(content: object) -> _RouterCalls:
     """Parse router JSON content into normalized call dictionaries."""
     if isinstance(content, dict):
         parsed = content
     else:
         try:
-            parsed = json.loads(str(content or "{}"))
+            parsed = json.loads(_strip_json_code_fence(str(content or "{}")))
         except json.JSONDecodeError:
-            return []
+            return _RouterCalls([], parse_error=True)
     raw_calls = parsed.get("tool_calls") if isinstance(parsed, dict) else None
     if not isinstance(raw_calls, list):
-        return []
+        return _RouterCalls([], parse_error=True)
     calls: list[dict[str, Any]] = []
     for item in raw_calls:
-        if isinstance(item, dict):
-            calls.append(item)
-    return calls
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        arguments = item.get("arguments")
+        if arguments is None:
+            arguments = item.get("parameters")
+        calls.append({"name": name, "arguments": arguments if isinstance(arguments, dict) else {}})
+    return _RouterCalls(calls)
+
+
+def _strip_json_code_fence(content: str) -> str:
+    """Return raw JSON from model output that may be wrapped in Markdown fences."""
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
+def _router_system_prompt() -> str:
+    """Return the strict local Qwen tool-router instruction."""
+    return (
+        "You route one user utterance to Reachy Mini robot tools. "
+        "Output RAW JSON only, no markdown, no code fences, no commentary. "
+        'The JSON object must match: {"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+        'Use the key "arguments" exactly; never use "parameters". '
+        "Call at most one tool. Use [] for ordinary conversation. "
+        'Use who_am_i for questions asking the speaker identity, such as "who am I". '
+        "Use who_is_here for questions asking which people are visible. "
+        'Use camera for visual scene/object questions like "what do you see" or "take a picture". '
+        "Use remember_person when the user introduces or names themself and asks to be remembered. "
+        "Use task_status when the user asks about running tools or background work. "
+        "Use movement, dance, emotion, and tracking tools only for explicit robot action requests."
+    )
 
 
 def _router_output_schema() -> dict[str, Any]:
@@ -315,33 +395,32 @@ def _compact_tool_specs(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         compact.append(
             {
                 "name": name,
-                "description": _truncate(str(tool.get("description") or ""), 220),
-                "parameters": _compact_schema(tool.get("parameters")),
+                "description": _truncate(str(tool.get("description") or ""), 180),
+                "arguments": _argument_hint(tool.get("parameters")),
             }
         )
     return compact
 
 
-def _compact_schema(schema: object) -> dict[str, Any]:
-    """Trim verbose JSON schema text while preserving argument names and requirements."""
+def _argument_hint(schema: object) -> dict[str, Any] | str:
+    """Return a compact argument description without the confusing schema key name."""
     if not isinstance(schema, dict):
-        return {}
-    compact: dict[str, Any] = {"type": schema.get("type", "object")}
+        return "none"
     properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return "none"
+    compact: dict[str, Any] = {}
     if isinstance(properties, dict):
-        compact_properties: dict[str, Any] = {}
         for key, value in properties.items():
             if not isinstance(key, str) or not isinstance(value, dict):
                 continue
             item: dict[str, Any] = {"type": value.get("type", "string")}
             if "enum" in value and isinstance(value["enum"], list):
                 item["enum"] = value["enum"][:20]
-            if value.get("description"):
-                item["description"] = _truncate(str(value["description"]), 160)
-            compact_properties[key] = item
-        compact["properties"] = compact_properties
-    if isinstance(schema.get("required"), list):
-        compact["required"] = schema["required"]
+            compact[key] = item
+    required = schema.get("required")
+    if isinstance(required, list) and required:
+        compact["_required"] = [item for item in required if isinstance(item, str)]
     return compact
 
 

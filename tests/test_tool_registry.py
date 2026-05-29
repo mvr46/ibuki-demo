@@ -36,7 +36,7 @@ def test_tool_registry_rejects_unknown_profile_tools(tmp_path: Path) -> None:
 
 def test_active_tool_specs_filter_unavailable_dependencies(tmp_path: Path) -> None:
     """Active specs should hide tools that need absent camera or face deps."""
-    registry = ToolRegistry.from_active_profile(_store(tmp_path, "camera\nhead_tracking\nwho_is_here\n"))
+    registry = ToolRegistry.from_active_profile(_store(tmp_path, "camera\nhead_tracking\nwho_is_here\nwho_am_i\n"))
     deps = ToolDependencies(reachy_mini=object(), movement_manager=object(), tool_registry=registry)
 
     names = {spec["name"] for spec in registry.get_active_tool_specs(deps)}
@@ -44,6 +44,7 @@ def test_active_tool_specs_filter_unavailable_dependencies(tmp_path: Path) -> No
     assert "camera" in names
     assert "head_tracking" not in names
     assert "who_is_here" not in names
+    assert "who_am_i" in names
 
 
 def test_core_tool_names_exclude_registry_internals() -> None:
@@ -51,6 +52,7 @@ def test_core_tool_names_exclude_registry_internals() -> None:
     names = list_core_tool_names()
 
     assert "dance" in names
+    assert "who_am_i" in names
     assert "core_tools" not in names
     assert "background_tool_manager" not in names
     assert "task_status" not in names

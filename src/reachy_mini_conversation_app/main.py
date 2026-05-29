@@ -151,7 +151,93 @@ def _install_network_media_host_fallback() -> None:
 def main() -> None:
     """Entrypoint for the Reachy Mini conversation app."""
     args, _ = parse_args()
-    run(args)
+    if os.getenv("REACHY_DASHBOARD_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        run_with_dashboard_server(args)
+    else:
+        run(args)
+
+
+def _startup_dashboard_status() -> dict[str, object]:
+    """Return dashboard status before runtime dependencies are available."""
+    return {
+        "active_backend": "local",
+        "backend_provider": "local",
+        "has_local_backend": False,
+        "has_hf_session_url": False,
+        "has_hf_ws_url": False,
+        "has_hf_connection": False,
+        "hf_connection_mode": "deployed",
+        "hf_direct_host": "localhost",
+        "hf_direct_port": 8765,
+        "can_proceed": False,
+        "can_proceed_with_hf": False,
+        "can_proceed_with_local": False,
+        "requires_restart": False,
+        "backend_unavailable": True,
+        "backend_unavailable_reason": "App process is starting.",
+    }
+
+
+def run_with_dashboard_server(args: argparse.Namespace) -> None:
+    """Run the console entrypoint with the dashboard FastAPI server enabled."""
+    import uvicorn
+    from fastapi import Response
+    from fastapi.responses import FileResponse
+    from starlette.staticfiles import StaticFiles
+
+    from reachy_mini_conversation_app.runtime.dashboard import (
+        mount_dashboard_routes,
+        ensure_dashboard_runtime_state,
+    )
+
+    settings_app = FastAPI()
+
+    @settings_app.middleware("http")
+    async def no_cache_middleware(request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    static_dir = Path(__file__).resolve().parent / "static"
+    index_file = static_dir / "index.html"
+    if static_dir.exists():
+        settings_app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @settings_app.get("/")
+    def _root() -> FileResponse:
+        return FileResponse(str(index_file))
+
+    @settings_app.get("/favicon.ico")
+    def _favicon() -> Response:
+        return Response(status_code=204)
+
+    dashboard_state = ensure_dashboard_runtime_state(settings_app)
+    dashboard_state.backend_status_provider = _startup_dashboard_status
+    dashboard_state.logs.install()
+    dashboard_state.logs.add("Dashboard server starting", category="SYSTEM")
+    mount_dashboard_routes(
+        settings_app,
+        get_deps=dashboard_state.get_deps,
+        get_backend_status=dashboard_state.get_backend_status,
+        logs=dashboard_state.logs,
+    )
+
+    stop_event = threading.Event()
+    server = uvicorn.Server(uvicorn.Config(settings_app, host="0.0.0.0", port=7860))
+    server_thread = threading.Thread(target=server.run, name="dashboard-api", daemon=True)
+    server_thread.start()
+
+    try:
+        run(
+            args,
+            app_stop_event=stop_event,
+            settings_app=settings_app,
+            instance_path=str(Path(__file__).resolve().parent),
+        )
+    finally:
+        stop_event.set()
+        server.should_exit = True
+        server_thread.join(timeout=5)
 
 
 def run(
@@ -259,7 +345,7 @@ def run(
             if args.media_backend != "auto":
                 robot_kwargs["media_backend"] = args.media_backend
 
-            logger.info("Initializing ReachyMini (SDK will auto-detect appropriate backend)")
+            logger.info("Initializing ReachyMini (media backend: %s)", args.media_backend)
             robot = ReachyMini(**robot_kwargs)
             transport_selection = getattr(robot, "_conversation_app_transport_selection", None)
             if transport_selection is not None:
