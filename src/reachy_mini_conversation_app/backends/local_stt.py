@@ -22,6 +22,10 @@ class LocalSTTAdapter(Protocol):
         """Return text for one complete utterance."""
         ...
 
+    async def warm(self) -> None:
+        """Warm latency-sensitive STT state."""
+        ...
+
 
 class MLXWhisperSTTAdapter:
     """Apple Silicon Whisper adapter using mlx-whisper when installed."""
@@ -30,10 +34,20 @@ class MLXWhisperSTTAdapter:
         """Initialize the MLX Whisper model selector."""
         self.model = model or config.LOCAL_STT_MODEL
         self.last_reject_reason: str | None = None
+        self._lock = asyncio.Lock()
 
     async def transcribe(self, audio: NDArray[np.int16], sample_rate: int) -> str:
         """Transcribe one complete utterance."""
-        return await asyncio.to_thread(self._transcribe_sync, audio, sample_rate)
+        async with self._lock:
+            return await asyncio.to_thread(self._transcribe_sync, audio, sample_rate)
+
+    async def warm(self) -> None:
+        """Warm mlx-whisper model/cache state with a short silent segment."""
+        async with self._lock:
+            await asyncio.to_thread(self._warm_sync)
+
+    def _warm_sync(self) -> None:
+        self._transcribe_sync(np.zeros(1600, dtype=np.int16), 16000)
 
     def _transcribe_sync(self, audio: NDArray[np.int16], sample_rate: int) -> str:
         try:

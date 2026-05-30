@@ -13,8 +13,6 @@ export type BackendStatus = {
   can_proceed?: boolean;
   can_proceed_with_hf?: boolean;
   can_proceed_with_local?: boolean;
-  ollama_base_url?: string;
-  ollama_model?: string;
   requires_restart?: boolean;
   backend_unavailable?: boolean;
   backend_unavailable_reason?: string;

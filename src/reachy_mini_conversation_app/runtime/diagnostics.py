@@ -86,7 +86,7 @@ class PerformanceDiagnostics:
             self._snapshot.health_checks = dict(checks)
 
     def set_local_model(self, **payload: object) -> None:
-        """Record local Ollama model capability diagnostics."""
+        """Record local model capability diagnostics."""
         with self._lock:
             merged = dict(self._snapshot.local_model)
             merged.update(payload)

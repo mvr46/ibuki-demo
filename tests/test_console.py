@@ -97,17 +97,12 @@ def test_refresh_performance_health_marks_doa_deprecated_without_polling(monkeyp
     monkeypatch.setattr("reachy_mini_conversation_app.runtime.console.measure_http_rtt_ms", lambda *args, **kwargs: 1.0)
     monkeypatch.setattr("reachy_mini_conversation_app.runtime.console.probe_host", lambda *args, **kwargs: True)
     monkeypatch.setattr("reachy_mini_conversation_app.runtime.console._fetch_json_dict", fake_fetch)
-    monkeypatch.setattr(
-        "reachy_mini_conversation_app.runtime.console._ollama_model_status",
-        lambda *args, **kwargs: {"configured_model": "qwen3.5:4b", "installed": True},
-    )
 
     stream._refresh_performance_health()
 
     snapshot = diagnostics.snapshot()
     assert all("/api/state/doa" not in url for url in fetched_urls)
     assert snapshot["health_checks"]["doa_status"] == "disabled/deprecated"
-    assert snapshot["local_model"]["configured_model"] == "qwen3.5:4b"
 
 
 def test_local_backend_requires_ready_piper_voice(monkeypatch: pytest.MonkeyPatch) -> None:

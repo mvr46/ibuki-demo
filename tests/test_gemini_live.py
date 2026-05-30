@@ -185,8 +185,10 @@ async def test_gemini_turn_buffers_transcripts_and_schedules_motion_reset(
 
 
 @pytest.mark.asyncio
-async def test_gemini_turn_completion_injects_speech_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Gemini turn completion should create and inject one attributed speech message."""
+async def test_gemini_turn_completion_updates_speaker_attribution_without_llm_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemini turn completion should update attribution without passive LLM context injection."""
     monkeypatch.setattr(gemini_mod, "get_session_instructions", lambda: "test")
     monkeypatch.setattr(gemini_mod, "get_session_voice", lambda: "Kore")
     monkeypatch.setattr(gemini_mod, "get_active_tool_specs", lambda _: [])
@@ -215,19 +217,12 @@ async def test_gemini_turn_completion_injects_speech_attribution(monkeypatch: py
     handler.client = _FakeLiveClient(session)
 
     task = asyncio.create_task(handler._run_live_session())
-    await _wait_for(
-        lambda: any(item.get("text", "").startswith("[Speech attribution:") for item in session.realtime_inputs),
-        timeout=2.0,
-    )
+    await _wait_for(lambda: len(speaker_worker.snapshot()) == 1, timeout=2.0)
 
     handler._stop_event.set()
     await asyncio.wait_for(task, timeout=1.0)
 
-    speech_messages = [
-        item["text"] for item in session.realtime_inputs if item.get("text", "").startswith("[Speech attribution:")
-    ]
-    assert len(speech_messages) == 1
-    assert 'transcript="Can you hear me?"' in speech_messages[0]
+    assert session.realtime_inputs == []
     assert len(speaker_worker.snapshot()) == 1
 
 

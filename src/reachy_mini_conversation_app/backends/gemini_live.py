@@ -556,7 +556,6 @@ class GeminiLiveHandler(ConversationHandler):
             logger.info("Gemini Live session connected successfully")
 
             video_task: asyncio.Task[None] | None = None
-            perception_task: asyncio.Task[None] | None = None
             try:
                 # Start the background tool manager
                 self.tool_manager.start_up(tool_callbacks=[self._handle_tool_result])
@@ -564,17 +563,6 @@ class GeminiLiveHandler(ConversationHandler):
                 # Start video sender if camera is available
                 if self.deps.camera_worker is not None:
                     video_task = asyncio.create_task(self._video_sender_loop(), name="gemini-video-sender")
-                if self.deps.face_identity_worker is not None or self.deps.speaker_attribution_worker is not None:
-                    from reachy_mini_conversation_app.vision.perception_stream import run_perception_stream
-
-                    perception_task = asyncio.create_task(
-                        run_perception_stream(
-                            self.deps.face_identity_worker,
-                            self,
-                            speaker_attribution_worker=self.deps.speaker_attribution_worker,
-                        ),
-                        name="perception-stream",
-                    )
 
                 # session.receive() yields responses for the current turn then completes.
                 # We loop so the session stays alive across multiple conversation turns.
@@ -656,12 +644,6 @@ class GeminiLiveHandler(ConversationHandler):
                     video_task.cancel()
                     try:
                         await video_task
-                    except asyncio.CancelledError:
-                        pass
-                if perception_task is not None:
-                    perception_task.cancel()
-                    try:
-                        await perception_task
                     except asyncio.CancelledError:
                         pass
                 await self.tool_manager.shutdown()
@@ -752,7 +734,7 @@ class GeminiLiveHandler(ConversationHandler):
         await self.inject_environment_message(timestamp_msg)
 
     async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
-        """Inject an ambient text message into the Gemini Live session."""
+        """Inject a text message into the Gemini Live session."""
         if not self.session:
             logger.debug("No session, cannot inject environment message")
             return

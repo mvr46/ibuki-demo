@@ -31,9 +31,9 @@ Conversational app for the Reachy Mini robot combining realtime voice backends, 
 
 ## Overview
 - Real-time audio conversation loop over the Reachy Mini media pipeline. Supported production backends:
-  - **Local Mac** - default local-first STT/LLM/TTS path using MLX Whisper, Ollama Gemma, Qwen tool routing, and required Piper voice output.
+  - **Local Mac** - default local-first path using MLX Whisper, llama.cpp chat/router/vision servers, and required Piper voice output.
   - **Hugging Face** - fallback backend, using the built-in Hugging Face server or your own local endpoint.
-- Vision processing uses the selected realtime backend by default (when the camera tool is used), with optional on-device local vision using SmolVLM2 (CPU/GPU/MPS) via `--local-vision`.
+- Camera questions use a local llama.cpp/OpenAI-compatible vision server by default, with optional Transformers SmolVLM2 via `--local-vision`.
 - Layered motion system queues primary moves (dances, emotions, goto poses, breathing) while blending speech-reactive wobble and head-tracking.
 - Static production dashboard handles backend selection, profile editing, face naming, diagnostics, and logs.
 
@@ -121,12 +121,16 @@ Some wheels (like PyTorch) are large and require compatible CUDA or CPU buildsâ€
 
 ## Configuration
 
-The default setup uses the local backend. For the optimized Mac mini wired setup, install a Piper voice and pull the local Ollama models:
+The default setup uses the local backend. For the optimized Mac mini wired setup, chat, tool routing, and
+camera-question vision run through local llama.cpp servers:
 
 ```bash
-ollama pull gemma3
-ollama pull qwen3.5:4b
+brew install llama.cpp
 uv run python -m piper.download_voices --download-dir ./cache/piper-voices en_US-lessac-medium
+
+llama-server -hf ggml-org/gemma-3-1b-it-GGUF:Q4_K_M -np 2 -c 4096 -fa on --host 127.0.0.1 --port 8080 --no-webui
+llama-server -hf Qwen/Qwen3-0.6B-GGUF:Q8_0 -np 1 -c 1024 -fa on --host 127.0.0.1 --port 8082 --no-webui
+llama-server -hf ggml-org/SmolVLM2-500M-Video-Instruct-GGUF:Q8_0 -np 1 -c 2048 -fa on --host 127.0.0.1 --port 8081 --no-webui
 ```
 
 Copy `.env.example` to `.env` when you want to switch to Hugging Face fallback, point Hugging Face at your own endpoint, or customize local model paths.
@@ -138,11 +142,19 @@ Copy `.env.example` to `.env` when you want to switch to Hugging Face fallback, 
 | `HF_REALTIME_WS_URL` | Direct websocket endpoint for your own Hugging Face backend. Accepts either a base URL like `ws://127.0.0.1:8765/v1` or the full websocket URL `ws://127.0.0.1:8765/v1/realtime`. Used when `HF_REALTIME_CONNECTION_MODE=local`. |
 | `HF_HOME` | Cache directory for local Hugging Face downloads (only used with `--local-vision` flag, defaults to `./cache`). |
 | `HF_TOKEN` | Optional token for Hugging Face access (for gated/private assets). |
-| `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
+| `LOCAL_VISION_MODEL` | Hugging Face model path for Transformers local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
 | `REACHY_MEDIA_HOST` | Optional media signaling override. Set to `10.42.0.2` for the direct Mac mini â†” Reachy Mini wired link. |
-| `OLLAMA_BASE_URL` | Local Ollama URL for the `local` backend and Ollama vision, defaults to `http://127.0.0.1:11434`. |
-| `OLLAMA_MODEL` | Ollama model for local chat/vision, defaults to `gemma3:latest`. Run `ollama pull gemma3` before using the optimized local backend. |
-| `OLLAMA_ROUTER_MODEL` | Compact Ollama model for local tool routing, defaults to `qwen3.5:4b`. Run `ollama pull qwen3.5:4b` for local robot tools. |
+| `LOCAL_CHAT_BASE_URL` | OpenAI-compatible local chat base URL, defaults to `http://127.0.0.1:8080/v1`. |
+| `LOCAL_CHAT_MODEL` | Model name sent to the OpenAI-compatible chat server. Defaults to `ggml-org/gemma-3-1b-it-GGUF` when using llama.cpp. |
+| `LOCAL_CHAT_NUM_PREDICT` | Max chat response tokens for normal local replies, defaults to `96`. |
+| `LOCAL_ROUTER_BASE_URL` | OpenAI-compatible local router base URL, defaults to `http://127.0.0.1:8082/v1`. |
+| `LOCAL_ROUTER_MODEL` | Model name sent to the OpenAI-compatible router server, defaults to `Qwen/Qwen3-0.6B-GGUF`. |
+| `LOCAL_ROUTER_NUM_CTX` | Router context size knob, defaults to `448`. |
+| `LOCAL_ROUTER_NUM_PREDICT` | Router response token limit, defaults to `18`. |
+| `LOCAL_VISION_BASE_URL` | OpenAI-compatible local vision base URL, defaults to `http://127.0.0.1:8081/v1`. |
+| `LOCAL_VISION_SERVER_MODEL` | Model name sent to the OpenAI-compatible vision server, defaults to `ggml-org/SmolVLM2-500M-Video-Instruct-GGUF`. |
+| `LOCAL_VISION_NUM_PREDICT` | Max vision response tokens for camera questions, defaults to `48`. |
+| `LOCAL_VISION_MAX_IMAGE_SIDE` | Largest frame side sent to the local vision server after cheap downsampling, defaults to `512`. |
 | `LOCAL_STT_MODEL` | MLX Whisper model for local STT, defaults to `mlx-community/whisper-small-mlx`. |
 | `PIPER_VOICE` | Piper `.onnx` voice model path for local TTS, for example `./cache/piper-voices/en_US-lessac-medium.onnx`. If unset, the app uses `./cache/piper-voices/en_US-lessac-medium.onnx` when that file exists. |
 
@@ -209,7 +221,7 @@ The app runs through the local robot audio stream. When launched as a Reachy Min
 | `--head-tracker {yolo,mediapipe}` | `None` | Select a visual head-tracking backend when a camera is available. `yolo` uses local YOLO face detection; DoA/spatial-audio steering is deprecated and disabled. `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
 | `--media-backend {auto,default,local,webrtc,no_media}` | `webrtc` | Select the Reachy Mini SDK media backend. The default uses WebRTC media over the direct wired Ethernet LAN setup. Use `local` only when the app runs on the same machine as the daemon IPC/audio devices. Use `no_media` for headless runs when camera/audio hardware is unavailable. In this app, `no_media` also disables camera, head tracking, and local vision. |
-| `--local-vision` | `False` | Use the local vision model (SmolVLM2) for camera-tool requests instead of the selected realtime backend. Requires `local_vision` extra to be installed. |
+| `--local-vision` | `False` | Use the Transformers SmolVLM2 processor for camera-tool requests instead of the configured local vision server. Requires `local_vision` extra to be installed. |
 | `--connection-mode {auto,localhost_only,network}` | `network` | Select how the Reachy Mini SDK connects to the daemon. Defaults to `network` so camera/audio media streams come from the robot daemon. Use `localhost_only` for local development daemons. |
 | `--robot-host HOST` | `None` | Reachy Mini daemon hostname or IP address when using `--connection-mode network`. |
 | `--robot-port PORT` | `None` | Reachy Mini daemon port. Uses the SDK default when omitted. |
@@ -230,8 +242,6 @@ reachy-mini-conversation-app --head-tracker yolo
 reachy-mini-conversation-app --robot-host <robot-ip-or-hostname> --head-tracker yolo
 
 # Optimized wired Mac mini setup
-ollama pull gemma3
-ollama pull qwen3.5:4b
 uv run python -m piper.download_voices --download-dir ./cache/piper-voices en_US-lessac-medium
 BACKEND_PROVIDER=local PIPER_VOICE=./cache/piper-voices/en_US-lessac-medium.onnx reachy-mini-conversation-app --hardware-profile mac-mini-wired --head-tracker yolo
 
@@ -254,7 +264,7 @@ reachy-mini-conversation-app --media-backend no_media
 | Tool | Action | Dependencies |
 |------|--------|--------------|
 | `move_head` | Queue a head pose change (left/right/up/down/front). | Core install only. |
-| `camera` | Capture the latest camera frame and analyze it with the selected realtime backend or the local vision model. | Requires camera worker. Uses local vision when `--local-vision` is enabled. |
+| `camera` | Capture the latest camera frame and analyze it with the configured local vision analyzer. | Requires camera worker. Defaults to a llama.cpp/OpenAI-compatible vision server for the local backend. |
 | `head_tracking` | Enable or disable head-tracking offsets (not identity recognition - only detects and tracks head position). | Camera worker with configured head tracker (`--head-tracker`). |
 | `dance` | Queue a dance from `reachy_mini_dances_library`. | Core install only. |
 | `stop_dance` | Clear queued dances. | Core install only. |

@@ -35,19 +35,9 @@ def test_huggingface_backend_does_not_resolve_model_name() -> None:
     assert config_mod._resolve_model_name(config_mod.HF_BACKEND, "gpt-realtime-2") == ""
 
 
-def test_local_backend_resolves_ollama_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Local backend should use the Ollama model selector."""
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:test")
-
-    assert config_mod._normalize_backend_provider("local", None) == config_mod.LOCAL_BACKEND
-    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "qwen3.5:test"
-
-
-def test_local_backend_defaults_to_gemma3_latest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Local backend should default to Gemma for normal local chat and vision."""
-    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
-
-    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == "gemma3:latest"
+def test_local_backend_defaults_to_llama_cpp_chat_model() -> None:
+    """Local backend should default to the optimized llama.cpp chat model."""
+    assert config_mod._resolve_model_name(config_mod.LOCAL_BACKEND, None) == config_mod.DEFAULT_LOCAL_CHAT_SERVER_MODEL
 
 
 def test_hf_default_session_url_uses_stable_space_proxy() -> None:
@@ -61,16 +51,72 @@ def test_refresh_runtime_config_reloads_hf_runtime_fields(monkeypatch: pytest.Mo
     monkeypatch.setenv("HF_TOKEN", "hf-runtime-token")
     monkeypatch.setenv("HF_HOME", "/tmp/reachy-hf-cache")
     monkeypatch.setenv("LOCAL_VISION_MODEL", "test/local-vision-model")
+    monkeypatch.setenv("LOCAL_VISION_BASE_URL", "http://vision.test/v1")
+    monkeypatch.setenv("LOCAL_VISION_SERVER_MODEL", "test/server-vision-model")
+    monkeypatch.setenv("LOCAL_VISION_NUM_PREDICT", "24")
+    monkeypatch.setenv("LOCAL_VISION_MAX_IMAGE_SIDE", "256")
+    monkeypatch.setenv("LOCAL_ROUTER_BASE_URL", "http://router.test/v1")
+    monkeypatch.setenv("LOCAL_ROUTER_MODEL", "test/router-model")
+    monkeypatch.setenv("LOCAL_ROUTER_NUM_CTX", "384")
+    monkeypatch.setenv("LOCAL_ROUTER_NUM_PREDICT", "12")
 
     monkeypatch.setattr(config_mod.config, "HF_TOKEN", None)
     monkeypatch.setattr(config_mod.config, "HF_HOME", "./old-cache")
     monkeypatch.setattr(config_mod.config, "LOCAL_VISION_MODEL", "old/model")
+    monkeypatch.setattr(config_mod.config, "LOCAL_VISION_BASE_URL", "http://old.test", raising=False)
+    monkeypatch.setattr(config_mod.config, "LOCAL_VISION_SERVER_MODEL", "old/server-model", raising=False)
+    monkeypatch.setattr(config_mod.config, "LOCAL_VISION_NUM_PREDICT", 1, raising=False)
+    monkeypatch.setattr(config_mod.config, "LOCAL_VISION_MAX_IMAGE_SIDE", 1, raising=False)
+    monkeypatch.setattr(config_mod.config, "LOCAL_ROUTER_BASE_URL", "http://old-router.test", raising=False)
+    monkeypatch.setattr(config_mod.config, "LOCAL_ROUTER_MODEL", "old/router-model", raising=False)
+    monkeypatch.setattr(config_mod.config, "LOCAL_ROUTER_NUM_CTX", 1, raising=False)
+    monkeypatch.setattr(config_mod.config, "LOCAL_ROUTER_NUM_PREDICT", 1, raising=False)
 
     config_mod.refresh_runtime_config_from_env()
 
     assert config_mod.config.HF_TOKEN == "hf-runtime-token"
     assert config_mod.config.HF_HOME == "/tmp/reachy-hf-cache"
     assert config_mod.config.LOCAL_VISION_MODEL == "test/local-vision-model"
+    assert config_mod.config.LOCAL_VISION_BASE_URL == "http://vision.test/v1"
+    assert config_mod.config.LOCAL_VISION_SERVER_MODEL == "test/server-vision-model"
+    assert config_mod.config.LOCAL_VISION_NUM_PREDICT == 24
+    assert config_mod.config.LOCAL_VISION_MAX_IMAGE_SIDE == 256
+    assert config_mod.config.LOCAL_ROUTER_BASE_URL == "http://router.test/v1"
+    assert config_mod.config.LOCAL_ROUTER_MODEL == "test/router-model"
+    assert config_mod.config.LOCAL_ROUTER_NUM_CTX == 384
+    assert config_mod.config.LOCAL_ROUTER_NUM_PREDICT == 12
+
+
+def test_local_latency_defaults_refresh_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local latency knobs should have first-audio optimized defaults."""
+    for name in (
+        "LOCAL_CHAT_BASE_URL",
+        "LOCAL_CHAT_MODEL",
+        "LOCAL_ROUTER_BASE_URL",
+        "LOCAL_ROUTER_MODEL",
+        "LOCAL_ROUTER_NUM_CTX",
+        "LOCAL_ROUTER_NUM_PREDICT",
+        "LOCAL_VAD_SILENCE_SECONDS",
+        "LOCAL_VISION_BASE_URL",
+        "LOCAL_VISION_SERVER_MODEL",
+        "LOCAL_VISION_NUM_PREDICT",
+        "LOCAL_VISION_MAX_IMAGE_SIDE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config_mod.refresh_runtime_config_from_env()
+
+    assert config_mod.config.LOCAL_CHAT_BASE_URL == "http://127.0.0.1:8080/v1"
+    assert config_mod.config.LOCAL_CHAT_MODEL == config_mod.DEFAULT_LOCAL_CHAT_SERVER_MODEL
+    assert config_mod.config.LOCAL_ROUTER_BASE_URL == "http://127.0.0.1:8082/v1"
+    assert config_mod.config.LOCAL_ROUTER_MODEL == config_mod.DEFAULT_LOCAL_ROUTER_SERVER_MODEL
+    assert config_mod.config.LOCAL_ROUTER_NUM_CTX == 448
+    assert config_mod.config.LOCAL_ROUTER_NUM_PREDICT == 18
+    assert config_mod.config.LOCAL_VAD_SILENCE_SECONDS == 0.45
+    assert config_mod.config.LOCAL_VISION_BASE_URL == "http://127.0.0.1:8081/v1"
+    assert config_mod.config.LOCAL_VISION_SERVER_MODEL == config_mod.DEFAULT_LOCAL_VISION_SERVER_MODEL
+    assert config_mod.config.LOCAL_VISION_NUM_PREDICT == 48
+    assert config_mod.config.LOCAL_VISION_MAX_IMAGE_SIDE == 512
 
 
 @pytest.mark.parametrize(

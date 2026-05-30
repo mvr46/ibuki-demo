@@ -51,12 +51,16 @@ uv run reachy-mini-conversation-app --connection-mode localhost_only
 Run a production local-pipeline smoke test against a running robot daemon:
 
 ```bash
-ollama pull gemma3
-ollama pull qwen3.5:4b
+brew install llama.cpp
 uv run python -m piper.download_voices --download-dir ./cache/piper-voices en_US-lessac-medium
+
+# Start these three llama.cpp servers in separate terminals:
+llama-server -hf ggml-org/gemma-3-1b-it-GGUF:Q4_K_M -np 2 -c 4096 -fa on --host 127.0.0.1 --port 8080 --no-webui
+llama-server -hf Qwen/Qwen3-0.6B-GGUF:Q8_0 -np 1 -c 1024 -fa on --host 127.0.0.1 --port 8082 --no-webui
+llama-server -hf ggml-org/SmolVLM2-500M-Video-Instruct-GGUF:Q8_0 -np 1 -c 2048 -fa on --host 127.0.0.1 --port 8081 --no-webui
+
+# Then run the app:
 BACKEND_PROVIDER=local \
-OLLAMA_MODEL=gemma3:latest \
-OLLAMA_ROUTER_MODEL=qwen3.5:4b \
 PIPER_VOICE=./cache/piper-voices/en_US-lessac-medium.onnx \
 uv run reachy-mini-conversation-app --debug
 ```

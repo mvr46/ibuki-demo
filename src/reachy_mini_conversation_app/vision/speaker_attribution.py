@@ -1,7 +1,6 @@
-"""Multimodal speaker-attribution worker for ambient conversation context."""
+"""Multimodal speaker-attribution worker for explicit identity tools."""
 
 from __future__ import annotations
-import json
 import time
 import logging
 import threading
@@ -305,30 +304,6 @@ class SpeakerAttributionWorker:
             return bool(getattr(source, "_assistant_speaking", False))
         with lock:
             return bool(getattr(source, "_assistant_speaking", False))
-
-
-def format_attributed_speech(segment: AttributedSpeechSegment) -> str:
-    """Format an attributed segment as an ambient conversation-context message."""
-    visual_state = "visually active" if segment.visual_activity_score >= 0.35 else "visual activity low"
-    if segment.visual_activity_score <= 0.0:
-        visual_state = "no visual activity"
-
-    parts = [
-        f"{segment.speaker_label} spoke from {segment.start_s:.2f}s to {segment.end_s:.2f}s",
-        _format_angle("audio", segment.audio_azimuth_deg),
-        _format_angle("visual", segment.visual_bearing_deg),
-        visual_state,
-        f"voice cluster {segment.voice_cluster_status}",
-    ]
-    if segment.self_speech_suppressed:
-        parts.append("assistant-overlap suppressed")
-    parts.extend(
-        [
-            f"confidence {segment.confidence:.2f}",
-            f"transcript={json.dumps(segment.transcript)}",
-        ]
-    )
-    return f"[Speech attribution: {', '.join(parts)}]"
 
 
 def _audio_window(

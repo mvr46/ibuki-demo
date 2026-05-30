@@ -117,40 +117,6 @@ def _fetch_json_dict(url: str, *, timeout: float) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _ollama_model_status(
-    base_url: str,
-    model: str,
-    *,
-    router_model: str | None = None,
-    timeout: float = 0.5,
-) -> dict[str, object]:
-    """Return whether the configured Ollama model is installed."""
-    selected_router_model = (router_model or "").strip()
-    status: dict[str, object] = {
-        "configured_model": model,
-        "router_model": selected_router_model or None,
-        "installed": False,
-        "router_installed": False,
-        "installed_models": [],
-    }
-    try:
-        with urlopen(f"{base_url.rstrip('/')}/api/tags", timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, URLError, TimeoutError, ValueError) as exc:
-        status["last_ollama_error"] = str(exc)
-        return status
-    models = payload.get("models") if isinstance(payload, dict) else None
-    names = [str(item.get("name")) for item in models if isinstance(item, dict) and item.get("name")] if isinstance(models, list) else []
-    status["installed_models"] = names
-    status["installed"] = model in names
-    status["router_installed"] = selected_router_model in names if selected_router_model else False
-    if model not in names:
-        status["last_ollama_error"] = f"Configured Ollama model {model!r} is not installed."
-    elif selected_router_model and selected_router_model not in names:
-        status["last_ollama_error"] = f"Configured Ollama router model {selected_router_model!r} is not installed."
-    return status
-
-
 class LocalStream:
     """LocalStream using Reachy Mini's recorder/player."""
 
@@ -403,9 +369,6 @@ class LocalStream:
         media_status = _fetch_json_dict(f"{base_url}/api/media/status", timeout=0.5)
         full_state = _fetch_json_dict(f"{base_url}/api/state/full", timeout=0.5)
         wired_link = probe_host("10.42.0.2", int(port), timeout_seconds=0.2)
-        ollama_base_url = getattr(config, "OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-        ollama_model = getattr(config, "OLLAMA_MODEL", get_model_name_for_backend(LOCAL_BACKEND))
-        ollama_router_model = getattr(config, "OLLAMA_ROUTER_MODEL", "qwen3.5:4b")
 
         set_daemon = getattr(diagnostics, "set_daemon", None)
         if callable(set_daemon):
@@ -425,9 +388,6 @@ class LocalStream:
                     "wired_link_present": wired_link,
                 }
             )
-        set_local_model = getattr(diagnostics, "set_local_model", None)
-        if callable(set_local_model):
-            set_local_model(**_ollama_model_status(ollama_base_url, ollama_model, router_model=ollama_router_model))
         set_local_tts = getattr(diagnostics, "set_local_tts", None)
         if callable(set_local_tts):
             set_local_tts(**piper_tts_status())
@@ -489,9 +449,6 @@ class LocalStream:
                 "can_proceed": can_proceed,
                 "can_proceed_with_hf": can_proceed_with_hf,
                 "can_proceed_with_local": can_proceed_with_local,
-                "ollama_base_url": getattr(config, "OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-                "ollama_model": getattr(config, "OLLAMA_MODEL", get_model_name_for_backend(LOCAL_BACKEND)),
-                "ollama_router_model": getattr(config, "OLLAMA_ROUTER_MODEL", "qwen3.5:4b"),
                 "requires_restart": requires_restart,
             }
 

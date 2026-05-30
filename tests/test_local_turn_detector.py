@@ -11,11 +11,11 @@ from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
 from reachy_mini_conversation_app.backends.local_llm import LocalLLMResponse
 from reachy_mini_conversation_app.backends.local_conversation import LocalConversationHandler
 from reachy_mini_conversation_app.backends.local_turn_detector import (
-    _BufferedFrame,
     LocalFrameStats,
-    LocalCompletedTurn,
     LocalTurnDetector,
+    LocalCompletedTurn,
     LocalTurnDetectorConfig,
+    _BufferedFrame,
 )
 
 
@@ -55,6 +55,11 @@ def _detector() -> LocalTurnDetector:
             min_frame_rms=40.0,
         )
     )
+
+
+def test_default_latency_endpoint_maps_to_23_frames() -> None:
+    """The 0.45s endpoint default should map to 23 20ms VAD frames."""
+    assert LocalTurnDetectorConfig(silence_seconds=0.45).silence_frames == 23
 
 
 def _stats(*, speech_like: bool, snr_db: float = 28.2) -> LocalFrameStats:
@@ -99,8 +104,8 @@ def test_real_speech_fixture_completes_with_pre_roll() -> None:
     assert completed.speech_ratio >= 0.45
 
 
-def test_robot_activity_uses_normal_speech_thresholds() -> None:
-    """Robot activity should be diagnostics only, not an extra suppression gate."""
+def test_robot_activity_requires_stronger_speech_to_start_turn() -> None:
+    """Robot activity should suppress weak self-audio while preserving loud barge-in."""
     silence = np.zeros(int(SR * 0.2), dtype=np.int16)
     weak_detector = _detector()
     weak_detector.process(_speech_like(amplitude=0.03), robot_activity=True)
@@ -110,7 +115,7 @@ def test_robot_activity_uses_normal_speech_thresholds() -> None:
     strong_detector.process(_speech_like(amplitude=0.12), robot_activity=True)
     strong_update = strong_detector.process(silence, robot_activity=True)
 
-    assert len(weak_update.completed_turns) == 1
+    assert weak_update.completed_turns == []
     assert len(strong_update.completed_turns) == 1
 
 

@@ -427,8 +427,10 @@ async def test_empty_user_transcript_exits_listening_without_chat_message(monkey
 
 
 @pytest.mark.asyncio
-async def test_openai_transcript_completion_injects_speech_attribution(monkeypatch: Any) -> None:
-    """OpenAI-compatible transcript completion should create and inject one attributed speech message."""
+async def test_openai_transcript_completion_updates_speaker_attribution_without_llm_context(
+    monkeypatch: Any,
+) -> None:
+    """Transcript completion should update speaker attribution without injecting passive LLM context."""
     monkeypatch.setattr(rt_mod, "get_session_instructions", lambda: "test")
     monkeypatch.setattr(rt_mod, "get_session_voice", lambda default=OPENAI_DEFAULT_VOICE: "alloy")
     monkeypatch.setattr(rt_mod, "get_active_tool_specs", lambda _: [])
@@ -525,13 +527,7 @@ async def test_openai_transcript_completion_injects_speech_attribution(monkeypat
 
     await handler._run_realtime_session()
 
-    speech_messages = [
-        kwargs["item"]["content"][0]["text"]
-        for kwargs in fake_client.realtime.conn.conversation.item.created
-        if kwargs["item"]["content"][0]["text"].startswith("[Speech attribution:")
-    ]
-    assert len(speech_messages) == 1
-    assert 'transcript="hello there"' in speech_messages[0]
+    assert fake_client.realtime.conn.conversation.item.created == []
     assert len(speaker_worker.snapshot()) == 1
 
 

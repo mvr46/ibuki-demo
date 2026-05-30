@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from reachy_mini_conversation_app.tools.who_am_i import WhoAmI
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies, get_active_tool_specs
 from reachy_mini_conversation_app.tools.who_is_here import WhoIsHere
-from reachy_mini_conversation_app.tools.who_am_i import WhoAmI
 from reachy_mini_conversation_app.tools.look_at_person import LookAtPerson
 from reachy_mini_conversation_app.vision.face_identity import IdentifiedTarget
 from reachy_mini_conversation_app.vision.head_tracking import HeadTrackerTarget

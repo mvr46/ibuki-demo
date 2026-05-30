@@ -334,10 +334,18 @@ class LocalTurnDetector:
             zero_crossing_rate=zcr,
             peak_dominance=peak_dominance,
         )
+        min_frame_rms = self.config.min_frame_rms
+        min_snr_db = self.config.min_snr_db
+        min_speech_band_ratio = 0.35
+        if robot_activity:
+            min_frame_rms *= 1.5
+            min_snr_db += 10.0
+            min_speech_band_ratio = 0.42
+
         speech_like = (
-            rms >= self.config.min_frame_rms
-            and snr_db >= self.config.min_snr_db
-            and speech_band_ratio >= 0.35
+            rms >= min_frame_rms
+            and snr_db >= min_snr_db
+            and speech_band_ratio >= min_speech_band_ratio
             and 0.005 <= zcr <= 0.35
             and noise_class == "speech_like"
         )

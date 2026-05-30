@@ -96,6 +96,7 @@ HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 HF_LOCAL_CONNECTION_MODE = "local"
 HF_DEPLOYED_CONNECTION_MODE = "deployed"
 HF_REALTIME_SESSION_PROXY_URL = "https://pollen-robotics-reachy-mini-realtime-url.hf.space/session"
+DEFAULT_LOCAL_CHAT_SERVER_MODEL = "ggml-org/gemma-3-1b-it-GGUF"
 
 
 @dataclass(frozen=True)
@@ -118,9 +119,10 @@ DEFAULT_MODEL_NAME_BY_BACKEND = {
     OPENAI_BACKEND: "gpt-realtime-2",
     GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
     HF_BACKEND: HF_DEFAULTS.model_name,
-    LOCAL_BACKEND: "gemma3:latest",
+    LOCAL_BACKEND: DEFAULT_LOCAL_CHAT_SERVER_MODEL,
 }
-DEFAULT_LOCAL_ROUTER_MODEL = "qwen3.5:4b"
+DEFAULT_LOCAL_ROUTER_SERVER_MODEL = "Qwen/Qwen3-0.6B-GGUF"
+DEFAULT_LOCAL_VISION_SERVER_MODEL = "ggml-org/SmolVLM2-500M-Video-Instruct-GGUF"
 BACKEND_LABEL_BY_PROVIDER = {
     OPENAI_BACKEND: "OpenAI Realtime",
     GEMINI_BACKEND: "Gemini Live",
@@ -170,7 +172,7 @@ def _resolve_model_name(
     if normalized_backend == HF_BACKEND:
         return DEFAULT_MODEL_NAME_BY_BACKEND[HF_BACKEND]
     if normalized_backend == LOCAL_BACKEND:
-        return (os.getenv("OLLAMA_MODEL") or model_name or DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND]).strip()
+        return (model_name or DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND]).strip()
 
     candidate = (model_name or "").strip()
     if candidate:
@@ -216,6 +218,18 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         logger.warning("Invalid float value for %s=%r, using default=%s", name, raw, default)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse an integer environment value."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid integer value for %s=%r, using default=%s", name, raw, default)
         return default
 
 
@@ -353,14 +367,23 @@ class Config:
     HF_REALTIME_SESSION_URL = HF_DEFAULTS.session_url
     HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
     REACHY_MEDIA_HOST = os.getenv(REACHY_MEDIA_HOST_ENV)
-    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or MODEL_NAME or DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND]
-    OLLAMA_ROUTER_MODEL = os.getenv("OLLAMA_ROUTER_MODEL", DEFAULT_LOCAL_ROUTER_MODEL)
+    LOCAL_CHAT_BASE_URL = os.getenv("LOCAL_CHAT_BASE_URL", "http://127.0.0.1:8080/v1")
+    LOCAL_CHAT_MODEL = os.getenv("LOCAL_CHAT_MODEL") or DEFAULT_LOCAL_CHAT_SERVER_MODEL
+    LOCAL_CHAT_NUM_PREDICT = _env_int("LOCAL_CHAT_NUM_PREDICT", 96)
+    LOCAL_ROUTER_BASE_URL = os.getenv("LOCAL_ROUTER_BASE_URL", "http://127.0.0.1:8082/v1")
+    LOCAL_ROUTER_MODEL = os.getenv("LOCAL_ROUTER_MODEL") or DEFAULT_LOCAL_ROUTER_SERVER_MODEL
+    LOCAL_ROUTER_NUM_CTX = _env_int("LOCAL_ROUTER_NUM_CTX", 448)
+    LOCAL_ROUTER_NUM_PREDICT = _env_int("LOCAL_ROUTER_NUM_PREDICT", 18)
     LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
     LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
     LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")
     PIPER_VOICE = os.getenv("PIPER_VOICE") or _default_piper_voice()
+    LOCAL_VAD_SILENCE_SECONDS = _env_float("LOCAL_VAD_SILENCE_SECONDS", 0.45)
     HF_HOME = os.getenv("HF_HOME", "./cache")
+    LOCAL_VISION_BASE_URL = os.getenv("LOCAL_VISION_BASE_URL", "http://127.0.0.1:8081/v1")
+    LOCAL_VISION_SERVER_MODEL = os.getenv("LOCAL_VISION_SERVER_MODEL", DEFAULT_LOCAL_VISION_SERVER_MODEL)
+    LOCAL_VISION_NUM_PREDICT = _env_int("LOCAL_VISION_NUM_PREDICT", 48)
+    LOCAL_VISION_MAX_IMAGE_SIDE = _env_int("LOCAL_VISION_MAX_IMAGE_SIDE", 512)
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
     REACHY_CAMERA_HORIZONTAL_FOV_DEG = _env_float("REACHY_CAMERA_HORIZONTAL_FOV_DEG", 60.0)
@@ -410,14 +433,23 @@ def refresh_runtime_config_from_env() -> None:
     config.HF_REALTIME_SESSION_URL = HF_DEFAULTS.session_url
     config.HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
     config.REACHY_MEDIA_HOST = os.getenv(REACHY_MEDIA_HOST_ENV)
-    config.OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    config.OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or config.MODEL_NAME or DEFAULT_MODEL_NAME_BY_BACKEND[LOCAL_BACKEND]
-    config.OLLAMA_ROUTER_MODEL = os.getenv("OLLAMA_ROUTER_MODEL", DEFAULT_LOCAL_ROUTER_MODEL)
+    config.LOCAL_CHAT_BASE_URL = os.getenv("LOCAL_CHAT_BASE_URL", "http://127.0.0.1:8080/v1")
+    config.LOCAL_CHAT_MODEL = os.getenv("LOCAL_CHAT_MODEL") or DEFAULT_LOCAL_CHAT_SERVER_MODEL
+    config.LOCAL_CHAT_NUM_PREDICT = _env_int("LOCAL_CHAT_NUM_PREDICT", 96)
+    config.LOCAL_ROUTER_BASE_URL = os.getenv("LOCAL_ROUTER_BASE_URL", "http://127.0.0.1:8082/v1")
+    config.LOCAL_ROUTER_MODEL = os.getenv("LOCAL_ROUTER_MODEL") or DEFAULT_LOCAL_ROUTER_SERVER_MODEL
+    config.LOCAL_ROUTER_NUM_CTX = _env_int("LOCAL_ROUTER_NUM_CTX", 448)
+    config.LOCAL_ROUTER_NUM_PREDICT = _env_int("LOCAL_ROUTER_NUM_PREDICT", 18)
     config.LOCAL_STT_PROVIDER = os.getenv("LOCAL_STT_PROVIDER", "mlx-whisper")
     config.LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-small-mlx")
     config.LOCAL_TTS_PROVIDER = os.getenv("LOCAL_TTS_PROVIDER", "piper")
     config.PIPER_VOICE = os.getenv("PIPER_VOICE") or _default_piper_voice()
+    config.LOCAL_VAD_SILENCE_SECONDS = _env_float("LOCAL_VAD_SILENCE_SECONDS", 0.45)
     config.HF_HOME = os.getenv("HF_HOME", "./cache")
+    config.LOCAL_VISION_BASE_URL = os.getenv("LOCAL_VISION_BASE_URL", "http://127.0.0.1:8081/v1")
+    config.LOCAL_VISION_SERVER_MODEL = os.getenv("LOCAL_VISION_SERVER_MODEL", DEFAULT_LOCAL_VISION_SERVER_MODEL)
+    config.LOCAL_VISION_NUM_PREDICT = _env_int("LOCAL_VISION_NUM_PREDICT", 48)
+    config.LOCAL_VISION_MAX_IMAGE_SIDE = _env_int("LOCAL_VISION_MAX_IMAGE_SIDE", 512)
     config.LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     config.HF_TOKEN = os.getenv("HF_TOKEN")
     config.REACHY_CAMERA_HORIZONTAL_FOV_DEG = _env_float("REACHY_CAMERA_HORIZONTAL_FOV_DEG", 60.0)

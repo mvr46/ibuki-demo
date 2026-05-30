@@ -10,7 +10,7 @@ The package is installed as `reachy_mini_conversation_app` and exposes the conso
 reachy-mini-conversation-app
 ```
 
-The default backend is local (`BACKEND_PROVIDER=local`): MLX Whisper for STT, Ollama Gemma for chat, Qwen for tool routing, and Piper for TTS. Hugging Face remains the production fallback. OpenAI Realtime and Gemini Live remain legacy adapters with deprecation warnings.
+The default backend is local (`BACKEND_PROVIDER=local`): MLX Whisper for STT, llama.cpp/OpenAI-compatible servers for chat, Qwen tool routing, and fast vision, plus Piper for TTS. Hugging Face remains the production fallback. OpenAI Realtime and Gemini Live remain legacy adapters with deprecation warnings.
 
 ## Important paths
 

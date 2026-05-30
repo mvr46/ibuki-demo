@@ -1,148 +1,120 @@
-"""Tests for the local Ollama LLM adapter."""
+"""Tests for the local llama.cpp/OpenAI-compatible LLM adapter."""
 
 from __future__ import annotations
 import json
-import asyncio
-from io import BytesIO
-from urllib.error import HTTPError
 from unittest.mock import patch
 
+import httpx
+import pytest
+
 from reachy_mini_conversation_app.backends.local_llm import (
-    OllamaLLMAdapter,
-    OllamaToolRouter,
     LocalToolRoutingResult,
+    OpenAICompatibleLLMAdapter,
+    OpenAICompatibleToolRouter,
     _parse_router_content,
-    ollama_tool_schemas,
-    ollama_tool_call_messages,
+    create_local_llm_adapter,
+    create_local_tool_router,
+    _openai_compatible_messages,
 )
 
 
-class _Response:
-    def __enter__(self) -> "_Response":
-        return self
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_stream_chat_yields_sse_deltas() -> None:
+    """llama.cpp-style streaming should parse OpenAI-compatible SSE chunks."""
+    captured = {}
 
-    def __exit__(self, *args: object) -> None:
-        return None
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=(
+                'data: {"choices":[{"delta":{"content":"hello "}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"there"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ).encode("utf-8"),
+        )
 
-    def read(self) -> bytes:
-        return json.dumps(
-            {
-                "message": {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "type": "function",
-                            "function": {"name": "dance", "arguments": {"style": "wave"}},
-                        }
-                    ],
-                }
-            }
-        ).encode("utf-8")
+    adapter = OpenAICompatibleLLMAdapter(
+        base_url="http://llama.test/v1",
+        model="gemma-gguf",
+        http_transport=httpx.MockTransport(handler),
+    )
+    chunks = [chunk async for chunk in adapter.stream_chat([{"role": "user", "content": "hi"}], [])]
+
+    assert chunks == ["hello ", "there"]
+    assert captured["url"] == "http://llama.test/v1/chat/completions"
+    assert captured["payload"]["model"] == "gemma-gguf"
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["max_tokens"] == 96
+    assert "keep_alive" not in captured["payload"]
+    assert "options" not in captured["payload"]
 
 
-def test_ollama_tool_schemas_wrap_existing_tool_specs() -> None:
-    """Local tool specs should be sent in Ollama's function wrapper format."""
-    converted = ollama_tool_schemas(
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_chat_normalizes_response() -> None:
+    """Non-streaming OpenAI-compatible responses should match the local adapter contract."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        captured["payload"] = payload
+        assert payload["stream"] is False
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "hello", "tool_calls": []}}]},
+        )
+
+    adapter = OpenAICompatibleLLMAdapter(
+        base_url="http://llama.test/v1",
+        model="gemma-gguf",
+        http_transport=httpx.MockTransport(handler),
+    )
+
+    response = await adapter.chat(
+        [{"role": "user", "content": "hi"}],
+        [{"type": "function", "name": "dance", "description": "Dance", "parameters": {"type": "object"}}],
+    )
+
+    assert response.content == "hello"
+    assert response.tool_calls == []
+    assert "tools" not in captured["payload"]
+    assert "format" not in captured["payload"]
+
+
+def test_create_local_llm_adapter_uses_openai_compatible_provider() -> None:
+    """The local backend always uses the llama.cpp/OpenAI-compatible chat path."""
+    adapter = create_local_llm_adapter()
+
+    assert isinstance(adapter, OpenAICompatibleLLMAdapter)
+
+
+def test_create_local_tool_router_uses_openai_compatible_provider() -> None:
+    """The local backend keeps Qwen on the llama.cpp router server."""
+    router = create_local_tool_router()
+
+    assert isinstance(router, OpenAICompatibleToolRouter)
+
+
+def test_openai_compatible_messages_fold_intermediate_system_context() -> None:
+    """Gemma llama.cpp templates require strict alternation after the first system message."""
+    converted = _openai_compatible_messages(
         [
-            {
-                "type": "function",
-                "name": "dance",
-                "description": "Do a dance",
-                "parameters": {"type": "object"},
-            }
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "move left"},
+            {"role": "assistant", "content": "Okay."},
+            {"role": "tool", "content": "Tool result: movement completed"},
+            {"role": "user", "content": "say hello"},
         ]
     )
 
-    assert converted == [
-        {
-            "type": "function",
-            "function": {
-                "name": "dance",
-                "description": "Do a dance",
-                "parameters": {"type": "object"},
-            },
-        }
-    ]
+    assert [message["role"] for message in converted] == ["system", "user", "assistant", "user"]
+    assert "Context:" in converted[-1]["content"]
+    assert "Tool result: movement completed" in converted[-1]["content"]
 
 
-def test_ollama_tool_call_messages_use_tool_history_shape() -> None:
-    """Normalized tool calls should be restorable into Ollama chat history."""
-    assert ollama_tool_call_messages([{"name": "dance", "arguments": {"style": "wave"}}]) == [
-        {
-            "type": "function",
-            "function": {"index": 0, "name": "dance", "arguments": {"style": "wave"}},
-        }
-    ]
-
-
-def test_ollama_llm_posts_wrapped_tools_and_normalizes_response() -> None:
-    """Ollama adapter should send wrapped tools and return normalized tool calls."""
-    captured = {}
-
-    def fake_urlopen(req: object, timeout: float) -> _Response:
-        captured["url"] = req.full_url
-        captured["payload"] = json.loads(req.data.decode("utf-8"))
-        captured["timeout"] = timeout
-        return _Response()
-
-    adapter = OllamaLLMAdapter(base_url="http://ollama.test", model="gemma3:test", timeout_seconds=9)
-    with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
-        response = adapter._chat_sync(
-            [{"role": "user", "content": "dance"}],
-            [{"type": "function", "name": "dance", "description": "Dance", "parameters": {"type": "object"}}],
-        )
-
-    assert captured["url"] == "http://ollama.test/api/chat"
-    assert captured["timeout"] == 9
-    assert captured["payload"]["think"] is False
-    assert captured["payload"]["options"]["num_predict"] == 192
-    assert captured["payload"]["tools"][0]["function"]["name"] == "dance"
-    assert response.tool_calls == [{"name": "dance", "arguments": {"style": "wave"}}]
-
-
-def test_ollama_llm_retries_without_tools_when_schema_is_rejected() -> None:
-    """Tool schema rejection should not prevent a spoken local response."""
-    payloads = []
-    diagnostics = {}
-
-    class TextResponse:
-        def __enter__(self) -> "TextResponse":
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps({"message": {"content": "hello", "tool_calls": []}}).encode("utf-8")
-
-    def fake_urlopen(req: object, timeout: float) -> TextResponse:
-        payload = json.loads(req.data.decode("utf-8"))
-        payloads.append(payload)
-        if "tools" in payload:
-            raise HTTPError(req.full_url, 400, "Bad Request", {}, BytesIO(b"invalid tools"))
-        return TextResponse()
-
-    adapter = OllamaLLMAdapter(
-        base_url="http://ollama.test",
-        model="gemma3:test",
-        diagnostics=type("Diagnostics", (), {"set_local_model": lambda self, **payload: diagnostics.update(payload)})(),
-    )
-    with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
-        response = adapter._chat_sync(
-            [{"role": "user", "content": "say hi"}],
-            [{"type": "function", "name": "dance", "description": "Dance", "parameters": {"type": "object"}}],
-        )
-
-    assert response.content == "hello"
-    assert "tools" in payloads[0]
-    assert "tools" not in payloads[1]
-    assert diagnostics["configured_model"] == "gemma3:test"
-    assert diagnostics["tools_disabled_by_model"] is True
-    assert diagnostics["last_tool_status"] == "rejected"
-
-
-def test_ollama_tool_router_posts_compact_structured_payload() -> None:
-    """Qwen router should use a compact JSON payload and normalize one tool call."""
+def test_openai_compatible_tool_router_posts_compact_completion_payload() -> None:
+    """llama.cpp router should use a tiny completion payload with no tool schemas."""
     captured = {}
 
     class RouterResponse:
@@ -153,15 +125,7 @@ def test_ollama_tool_router_posts_compact_structured_payload() -> None:
             return None
 
         def read(self) -> bytes:
-            return json.dumps(
-                {
-                    "message": {
-                        "content": json.dumps(
-                            {"tool_calls": [{"name": "look_at_person", "arguments": {"name": "Matt"}}]}
-                        )
-                    }
-                }
-            ).encode("utf-8")
+            return json.dumps({"choices": [{"text": " move_head|left"}]}).encode("utf-8")
 
     def fake_urlopen(req: object, timeout: float) -> RouterResponse:
         captured["url"] = req.full_url
@@ -169,66 +133,121 @@ def test_ollama_tool_router_posts_compact_structured_payload() -> None:
         captured["timeout"] = timeout
         return RouterResponse()
 
-    router = OllamaToolRouter(base_url="http://ollama.test", model="qwen3.5:test", timeout_seconds=3)
+    router = OpenAICompatibleToolRouter(base_url="http://llama.test/v1", model="qwen3-0.6b", timeout_seconds=3)
     with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
         result = router._route_sync(
-            "look at Matt",
-            [
-                {
-                    "type": "function",
-                    "name": "look_at_person",
-                    "description": "Turn toward a named visible person.",
-                    "parameters": {"type": "object", "properties": {"name": {"type": "string"}}},
-                }
-            ],
+            "move your head left",
+            [{"type": "function", "name": "move_head", "description": "Move head", "parameters": {}}],
         )
 
-    assert captured["url"] == "http://ollama.test/api/chat"
+    assert captured["url"] == "http://llama.test/v1/completions"
     assert captured["timeout"] == 3
-    assert captured["payload"]["model"] == "qwen3.5:test"
-    assert captured["payload"]["think"] is False
-    assert captured["payload"]["options"]["num_predict"] <= 64
-    assert captured["payload"]["format"]["required"] == ["tool_calls"]
-    user_content = json.loads(captured["payload"]["messages"][1]["content"])
-    assert "tools" in user_content
-    assert "available_tools" not in user_content
-    assert user_content["tools"][0]["arguments"]["name"]["type"] == "string"
-    assert result.tool_calls == [{"name": "look_at_person", "arguments": {"name": "Matt"}}]
+    assert captured["payload"]["model"] == "qwen3-0.6b"
+    assert captured["payload"]["stream"] is False
+    assert captured["payload"]["temperature"] == 0
+    assert captured["payload"]["max_tokens"] == 18
+    assert captured["payload"]["stop"] == ["\n"]
+    assert "tools" not in captured["payload"]
+    assert "format" not in captured["payload"]
+    assert "messages" not in captured["payload"]
+    assert "move_head" in captured["payload"]["prompt"]
+    assert '"enum"' not in captured["payload"]["prompt"]
+    assert result.tool_calls == [{"name": "move_head", "arguments": {"direction": "left"}}]
 
 
-def test_qwen_router_parser_accepts_raw_json() -> None:
-    """Router parser should accept the exact raw JSON shape requested from Qwen."""
-    parsed = _parse_router_content('{"tool_calls":[{"name":"who_am_i","arguments":{}}]}')
+def test_qwen_router_parser_accepts_none_contract() -> None:
+    """Router parser should accept the exact no-tool contract requested from Qwen."""
+    parsed = _parse_router_content("none|")
 
-    assert parsed == [{"name": "who_am_i", "arguments": {}}]
+    assert parsed == []
     assert parsed.parse_error is False
 
 
-def test_qwen_router_parser_strips_fenced_json() -> None:
-    """Router parser should tolerate Markdown fences returned by Qwen."""
-    parsed = _parse_router_content('```json\n{"tool_calls":[{"name":"camera","arguments":{"question":"what do you see"}}]}\n```')
+def test_qwen_router_parser_accepts_loose_none_text() -> None:
+    """Small completion routers sometimes omit the pipe for no-tool turns."""
+    parsed = _parse_router_content("none none")
 
-    assert parsed == [{"name": "camera", "arguments": {"question": "what do you see"}}]
+    assert parsed == []
     assert parsed.parse_error is False
 
 
-def test_qwen_router_parser_accepts_parameters_alias() -> None:
-    """Router parser should normalize Qwen's observed parameters alias to arguments."""
-    parsed = _parse_router_content('{"tool_calls":[{"name":"move_head","parameters":{"direction":"left"}}]}')
+def test_qwen_router_parser_maps_camera_arg() -> None:
+    """Router parser should map camera args into the existing tool schema."""
+    parsed = _parse_router_content("camera|what do you see?", user_text="what do you see?")
+
+    assert parsed == [{"name": "camera", "arguments": {"question": "what do you see?"}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_maps_camera_question_sentinel_with_punctuation() -> None:
+    """Completion routers may add a period after the sentinel; keep original question."""
+    parsed = _parse_router_content("camera|question.", user_text="what do you see?")
+
+    assert parsed == [{"name": "camera", "arguments": {"question": "what do you see?"}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_maps_move_head_arg() -> None:
+    """Router parser should validate move_head directions locally."""
+    parsed = _parse_router_content("move_head|left")
 
     assert parsed == [{"name": "move_head", "arguments": {"direction": "left"}}]
     assert parsed.parse_error is False
 
 
-def test_qwen_router_parser_marks_invalid_json() -> None:
+def test_qwen_router_parser_maps_generic_dance_to_random() -> None:
+    """Generic dance should preserve random move behavior."""
+    parsed = _parse_router_content("dance|")
+
+    assert parsed == [{"name": "dance", "arguments": {}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_maps_dance_none_to_random() -> None:
+    """Small completion routers may write a none arg for random optional choices."""
+    parsed = _parse_router_content("dance|none")
+
+    assert parsed == [{"name": "dance", "arguments": {}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_drops_non_explicit_dance_move() -> None:
+    """A model-selected dance move should be cleared unless the user said it."""
+    tools = [
+        {
+            "name": "dance",
+            "parameters": {"properties": {"move": {"enum": ["simple_nod", "robot_wave"]}}},
+        }
+    ]
+    parsed = _parse_router_content("dance|simple_nod", user_text="can you dance?", tools=tools)
+
+    assert parsed == [{"name": "dance", "arguments": {}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_accepts_explicit_dance_move() -> None:
+    """A named dance move should pass only when explicitly present in the utterance."""
+    tools = [
+        {
+            "name": "dance",
+            "parameters": {"properties": {"move": {"enum": ["simple_nod", "robot_wave"]}}},
+        }
+    ]
+    parsed = _parse_router_content("dance|robot_wave", user_text="please do robot wave", tools=tools)
+
+    assert parsed == [{"name": "dance", "arguments": {"move": "robot_wave"}}]
+    assert parsed.parse_error is False
+
+
+def test_qwen_router_parser_marks_invalid_contract() -> None:
     """Invalid router output should be logged as a parse failure without a fallback call."""
-    parsed = _parse_router_content("not json")
+    parsed = _parse_router_content("not a route")
 
     assert parsed == []
     assert parsed.parse_error is True
 
 
-def test_ollama_tool_router_ignores_unknown_qwen_tool() -> None:
+def test_openai_compatible_tool_router_ignores_unknown_qwen_tool() -> None:
     """Unknown Qwen-selected tools should be dropped without substituting a deterministic call."""
     class RouterResponse:
         def __enter__(self) -> "RouterResponse":
@@ -238,14 +257,12 @@ def test_ollama_tool_router_ignores_unknown_qwen_tool() -> None:
             return None
 
         def read(self) -> bytes:
-            return json.dumps({"message": {"content": '{"tool_calls":[{"name":"unknown_tool","arguments":{}}]}'}}).encode(
-                "utf-8"
-            )
+            return json.dumps({"choices": [{"text": "unknown_tool|"}]}).encode("utf-8")
 
     def fake_urlopen(req: object, timeout: float) -> RouterResponse:
         return RouterResponse()
 
-    router = OllamaToolRouter(base_url="http://ollama.test", model="qwen3.5:test")
+    router = OpenAICompatibleToolRouter(base_url="http://llama.test/v1", model="qwen3-0.6b")
     with patch("reachy_mini_conversation_app.backends.local_llm.urlopen", fake_urlopen):
         result = router._route_sync(
             "do something",
@@ -257,50 +274,47 @@ def test_ollama_tool_router_ignores_unknown_qwen_tool() -> None:
     assert result.parse_error is False
 
 
-def test_ollama_tool_router_reports_qwen_no_tool_without_deterministic_shortcut() -> None:
+@pytest.mark.asyncio
+async def test_openai_compatible_tool_router_reports_qwen_no_tool_without_deterministic_shortcut() -> None:
     """Qwen no-tool responses should stay no-tool, even for action-like utterances."""
-    async def run() -> None:
-        diagnostics = {}
-        router = OllamaToolRouter(
-            diagnostics=type(
-                "Diagnostics",
-                (),
-                {"set_local_model": lambda self, **payload: diagnostics.update(payload)},
-            )()
-        )
-        router._route_sync = lambda _text, _tools: LocalToolRoutingResult(tool_calls=[])  # type: ignore[method-assign]
-        tools = [{"type": "function", "name": "move_head", "description": "Move head", "parameters": {}}]
+    diagnostics = {}
+    router = OpenAICompatibleToolRouter(
+        diagnostics=type(
+            "Diagnostics",
+            (),
+            {"set_local_model": lambda self, **payload: diagnostics.update(payload)},
+        )()
+    )
+    router._route_sync = lambda _text, _tools: LocalToolRoutingResult(tool_calls=[])  # type: ignore[method-assign]
+    tools = [{"type": "function", "name": "move_head", "description": "Move head", "parameters": {}}]
 
-        result = await router.route("move your head left", tools)
+    result = await router.route("move your head left", tools)
 
-        assert result.tool_calls == []
-        assert diagnostics["qwen_router_status"] == "qwen_no_tool"
-
-    asyncio.run(run())
+    assert result.tool_calls == []
+    assert diagnostics["qwen_router_status"] == "router_no_tool"
+    assert diagnostics["router_provider"] == "openai_compatible"
 
 
-def test_ollama_tool_router_reports_qwen_parse_error() -> None:
-    """Malformed Qwen output should surface as qwen_parse_error for diagnostics."""
-    async def run() -> None:
-        diagnostics = {}
-        router = OllamaToolRouter(
-            diagnostics=type(
-                "Diagnostics",
-                (),
-                {"set_local_model": lambda self, **payload: diagnostics.update(payload)},
-            )()
-        )
-        router._route_sync = lambda _text, _tools: LocalToolRoutingResult(  # type: ignore[method-assign]
-            tool_calls=[],
-            raw_content="```json\n{bad",
-            parse_error=True,
-        )
-        tools = [{"type": "function", "name": "camera", "description": "Camera", "parameters": {}}]
+@pytest.mark.asyncio
+async def test_openai_compatible_tool_router_reports_qwen_parse_error() -> None:
+    """Malformed Qwen output should surface as a router parse error for diagnostics."""
+    diagnostics = {}
+    router = OpenAICompatibleToolRouter(
+        diagnostics=type(
+            "Diagnostics",
+            (),
+            {"set_local_model": lambda self, **payload: diagnostics.update(payload)},
+        )()
+    )
+    router._route_sync = lambda _text, _tools: LocalToolRoutingResult(  # type: ignore[method-assign]
+        tool_calls=[],
+        raw_content="```json\n{bad",
+        parse_error=True,
+    )
+    tools = [{"type": "function", "name": "camera", "description": "Camera", "parameters": {}}]
 
-        result = await router.route("what do you see?", tools)
+    result = await router.route("what do you see?", tools)
 
-        assert result.tool_calls == []
-        assert diagnostics["qwen_router_status"] == "qwen_parse_error"
-        assert diagnostics["last_ollama_error"] == "```json\n{bad"
-
-    asyncio.run(run())
+    assert result.tool_calls == []
+    assert diagnostics["qwen_router_status"] == "router_parse_error"
+    assert diagnostics["last_local_model_error"] == "```json\n{bad"

@@ -688,24 +688,12 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                 pass
 
             response_sender_task: asyncio.Task[None] | None = None
-            perception_task: asyncio.Task[None] | None = None
             try:
                 # Start the background tool manager
                 self.tool_manager.start_up(tool_callbacks=[self._handle_tool_result])
 
                 # Start the response sender worker
                 response_sender_task = asyncio.create_task(self._response_sender_loop(), name="response-sender")
-                if self.deps.face_identity_worker is not None or self.deps.speaker_attribution_worker is not None:
-                    from reachy_mini_conversation_app.vision.perception_stream import run_perception_stream
-
-                    perception_task = asyncio.create_task(
-                        run_perception_stream(
-                            self.deps.face_identity_worker,
-                            self,
-                            speaker_attribution_worker=self.deps.speaker_attribution_worker,
-                        ),
-                        name="perception-stream",
-                    )
 
                 async for event in self.connection:
                     logger.debug("Realtime event: %s", event.type)
@@ -928,13 +916,6 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         await response_sender_task
                     except asyncio.CancelledError:
                         pass
-                if perception_task is not None:
-                    perception_task.cancel()
-                    try:
-                        await perception_task
-                    except asyncio.CancelledError:
-                        pass
-
                 # Stop background tool manager tasks (listener + cleanup) in all paths.
                 await self.tool_manager.shutdown()
 
@@ -1059,7 +1040,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         )
 
     async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
-        """Inject an ambient user-role environment message into the realtime conversation."""
+        """Inject a user-role environment message into the realtime conversation."""
         if not self.connection:
             logger.debug("No connection, cannot inject environment message")
             return

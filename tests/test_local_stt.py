@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from reachy_mini_conversation_app.backends.local_stt import MLXWhisperSTTAdapter, reject_transcript_reason
 
@@ -54,3 +55,23 @@ def test_mlx_whisper_rejects_pathological_result(monkeypatch) -> None:
 
     assert text == ""
     assert adapter.last_reject_reason == "repeated_character"
+
+
+@pytest.mark.asyncio
+async def test_mlx_whisper_warm_runs_silent_transcription(monkeypatch) -> None:
+    """Warmup should load mlx-whisper state before the first real user turn."""
+    captured = {}
+
+    def fake_transcribe(audio, **kwargs):
+        captured["audio"] = audio
+        captured.update(kwargs)
+        return {"text": "", "segments": [{"no_speech_prob": 0.99}]}
+
+    monkeypatch.setitem(sys.modules, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    adapter = MLXWhisperSTTAdapter(model="test-model")
+
+    await adapter.warm()
+
+    assert captured["path_or_hf_repo"] == "test-model"
+    assert captured["audio"].shape == (1600,)
+    assert adapter.last_reject_reason == "whisper_no_speech"

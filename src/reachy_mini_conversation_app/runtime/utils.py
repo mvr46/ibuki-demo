@@ -182,7 +182,7 @@ def initialize_camera_and_vision(
             logging.getLogger(__name__).info("Local vision enabled; model loading is deferred until first camera-tool use.")
         else:
             logging.getLogger(__name__).info(
-                "Using the selected realtime backend for vision (default). Use --local-vision for local processing.",
+                "Using the configured backend vision analyzer. Use --local-vision for Transformers SmolVLM processing.",
             )
 
     return camera_worker, vision_processor

@@ -70,5 +70,5 @@ class ConversationHandler(AsyncStreamHandler, ABC):
 
     @abstractmethod
     async def inject_environment_message(self, text: str, *, trigger_response: bool = False) -> None:
-        """Inject an ambient environment message into the conversation context."""
+        """Inject an environment message into the conversation context."""
         ...

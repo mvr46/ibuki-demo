@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from reachy_mini_conversation_app.vision.speaker_attribution import SpeakerAttributionWorker, format_attributed_speech
+from reachy_mini_conversation_app.vision.speaker_attribution import SpeakerAttributionWorker
 from reachy_mini_conversation_app.vision.face_identity_worker import VisibleTrackObservation
 from reachy_mini_conversation_app.vision.head_tracking.speaker import SpatialAudioSample
 
@@ -76,7 +76,6 @@ def test_speaker_attribution_selects_named_audio_visual_match() -> None:
     assert segment.visual_bearing_deg == pytest.approx(-30.5)
     assert segment.confidence > 0.75
     assert not segment.off_camera
-    assert "Matteo/person_7 spoke from 0.00s to 2.00s" in format_attributed_speech(segment)
 
 
 def test_speaker_attribution_uses_off_camera_fallback() -> None:
