@@ -1,16 +1,9 @@
-import { state, subscribe, loadDashboardStatus } from "../state.ts";
+import { subscribe } from "../state.ts";
 import { api } from "../api.ts";
 import { el, setStatus } from "../util.ts";
-import { renderLaunchForm } from "../components/launchConfig.ts";
+import { renderAppOptions } from "../components/launchConfig.ts";
 import { openProfileModal } from "../components/profileModal.ts";
 import type { ProfileList, View } from "../types.ts";
-
-const HF_BACKEND = "huggingface";
-const LOCAL_BACKEND = "local";
-
-function activeBackend(): string {
-  return state.status?.backend_provider || LOCAL_BACKEND;
-}
 
 function sectionCard(title: string, desc: string, children: Array<HTMLElement | null>, action?: HTMLElement | null): HTMLElement {
   const head = el("div", { class: "card-head" }, [
@@ -23,63 +16,6 @@ function sectionCard(title: string, desc: string, children: Array<HTMLElement | 
 export function createSettingsView(): View {
   let unsub: (() => void) | null = null;
   let profiles: ProfileList | null = null;
-
-  // ---- Backend ----
-  const localRadio = el("input", { type: "radio", name: "backend", value: LOCAL_BACKEND });
-  const hfRadio = el("input", { type: "radio", name: "backend", value: HF_BACKEND });
-  const localChoice = el("label", { class: "choice" }, [localRadio, el("span", { text: "Local Mac" })]);
-  const hfChoice = el("label", { class: "choice" }, [hfRadio, el("span", { text: "Hugging Face" })]);
-  const choiceGrid = el("div", { class: "choice-grid" }, [localChoice, hfChoice]);
-
-  const hfMode = el("select", {}, [
-    el("option", { value: "deployed", text: "Built-in server" }),
-    el("option", { value: "local", text: "Local websocket" }),
-  ]);
-  const hfHost = el("input", { type: "text", placeholder: "localhost" });
-  const hfPort = el("input", { type: "number", min: "1", max: "65535", value: "8765" });
-  const hfFields = el("div", { class: "hf-grid" }, [hfMode, hfHost, hfPort]);
-  const saveBackendBtn = el("button", { class: "btn btn-block", type: "button", text: "Save backend" });
-  const backendStatus = el("p", { class: "status-line" });
-
-  function syncBackendUi(): void {
-    const usingHf = hfRadio.checked;
-    localChoice.classList.toggle("is-selected", localRadio.checked);
-    hfChoice.classList.toggle("is-selected", usingHf);
-    hfFields.hidden = !usingHf;
-  }
-  function fillBackendFromStatus(force: boolean): void {
-    if (force) {
-      const backend = activeBackend();
-      localRadio.checked = backend === LOCAL_BACKEND;
-      hfRadio.checked = backend === HF_BACKEND;
-    }
-    if (document.activeElement !== hfMode) hfMode.value = state.status?.hf_connection_mode || "deployed";
-    if (document.activeElement !== hfHost) hfHost.value = state.status?.hf_direct_host || "localhost";
-    if (document.activeElement !== hfPort) hfPort.value = String(state.status?.hf_direct_port || 8765);
-    syncBackendUi();
-  }
-  localRadio.addEventListener("change", syncBackendUi);
-  hfRadio.addEventListener("change", syncBackendUi);
-  saveBackendBtn.addEventListener("click", () => void saveBackend());
-
-  async function saveBackend(): Promise<void> {
-    const backend = hfRadio.checked ? HF_BACKEND : LOCAL_BACKEND;
-    const body: Record<string, string | number> = { backend };
-    if (backend === HF_BACKEND) {
-      body.hf_mode = hfMode.value;
-      body.hf_host = hfHost.value.trim();
-      body.hf_port = Number.parseInt(hfPort.value || "8765", 10);
-    }
-    setStatus(backendStatus, "Saving...");
-    try {
-      await api.backendConfig(body);
-      setStatus(backendStatus, "Saved. Refreshing status...", "ok");
-      await loadDashboardStatus();
-      fillBackendFromStatus(true);
-    } catch (error) {
-      setStatus(backendStatus, error instanceof Error ? error.message : "Failed to save.", "error");
-    }
-  }
 
   // ---- Profiles ----
   const lockNotice = el("div", { class: "notice warn", hidden: true });
@@ -143,22 +79,12 @@ export function createSettingsView(): View {
     renderProfiles();
   }
 
-  function update(): void {
-    fillBackendFromStatus(false);
-  }
-
   return {
     mount(container) {
-      const launchForm = renderLaunchForm({ variant: "full" });
-      const launchSection = sectionCard(
-        "Launch",
-        "Configure the conversation app flags. The Run button in the header uses these settings.",
-        [launchForm],
-      );
-      const backendSection = sectionCard(
-        "Backend",
-        "Choose where inference runs.",
-        [choiceGrid, hfFields, saveBackendBtn, backendStatus],
+      const appOptionsSection = sectionCard(
+        "App options",
+        "Toggles applied when you start the robot app from the header.",
+        [renderAppOptions()],
       );
       const profilesSection = sectionCard(
         "Profiles",
@@ -168,14 +94,13 @@ export function createSettingsView(): View {
       );
 
       container.append(el("div", { class: "view-scroll narrow" }, [
-        el("div", { class: "col-stack" }, [launchSection, backendSection, profilesSection]),
+        el("div", { class: "col-stack" }, [appOptionsSection, profilesSection]),
       ]));
 
-      fillBackendFromStatus(true);
       void loadProfiles();
-      unsub = subscribe(update);
+      unsub = subscribe(renderProfiles);
     },
-    update,
+    update: renderProfiles,
     destroy() {
       unsub?.();
       unsub = null;

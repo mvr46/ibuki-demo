@@ -12,7 +12,7 @@ import {
   loadFaceState,
 } from "./state.ts";
 import { byId } from "./util.ts";
-import { loadPersistedLaunchConfig, seedLaunchDefaults } from "./components/launchConfig.ts";
+import { loadPersistedLaunchOptions } from "./components/launchConfig.ts";
 import { createShell } from "./shell.ts";
 import { createRouter } from "./router.ts";
 import { createMonitorView } from "./views/monitor.ts";
@@ -56,13 +56,12 @@ function connectProcessLogs(): void {
 
 function onProcessStatus(available: boolean): void {
   if (available && state.process) {
-    seedLaunchDefaults(state.process);
     connectProcessLogs();
   }
 }
 
 async function init(): Promise<void> {
-  loadPersistedLaunchConfig();
+  loadPersistedLaunchOptions();
 
   const shell = createShell(byId("app"));
   const router = createRouter({

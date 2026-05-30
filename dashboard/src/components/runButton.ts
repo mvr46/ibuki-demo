@@ -1,16 +1,10 @@
-import { state, subscribe, notify, addLocalLog } from "../state.ts";
+import { state, subscribe, notify, addLocalLog, appPhase } from "../state.ts";
 import { api } from "../api.ts";
-import { el } from "../util.ts";
-import { createPopover } from "./popover.ts";
-import { renderLaunchForm, currentCommand, portError } from "./launchConfig.ts";
+import { el, setDot } from "../util.ts";
+import { currentCommand } from "./launchConfig.ts";
+import type { AppPhase, DotState } from "../types.ts";
 
 export async function startProcess(): Promise<void> {
-  const invalid = portError();
-  if (invalid) {
-    addLocalLog(invalid, "WARNING", "PROCESS");
-    notify();
-    return;
-  }
   const command = currentCommand();
   if (!command.trim()) {
     addLocalLog("No command to run.", "WARNING", "PROCESS");
@@ -19,7 +13,7 @@ export async function startProcess(): Promise<void> {
   try {
     state.process = await api.processStart(command);
     state.processAvailable = true;
-    addLocalLog(`Started ${command}`, "INFO", "PROCESS");
+    addLocalLog("Starting local robot app.", "INFO", "PROCESS");
   } catch (error) {
     addLocalLog(error instanceof Error ? error.message : "Failed to start.", "ERROR", "PROCESS");
   }
@@ -30,69 +24,77 @@ export async function stopProcess(): Promise<void> {
   try {
     state.process = await api.processStop();
     state.processAvailable = true;
-    addLocalLog("Stopped process.", "INFO", "PROCESS");
+    addLocalLog("Stopping local robot app.", "INFO", "PROCESS");
   } catch (error) {
     addLocalLog(error instanceof Error ? error.message : "Failed to stop.", "ERROR", "PROCESS");
   }
   notify();
 }
 
-function buildPopoverBody(close: () => void): HTMLElement {
-  const running = !!state.process?.running;
-  const form = renderLaunchForm({ variant: "compact" });
+type PhaseView = {
+  label: string;
+  tone: DotState;
+  detail?: string;
+  action: "start" | "stop";
+  actionLabel: string;
+  danger: boolean;
+};
 
-  const allLink = el("button", { class: "link-btn", type: "button", text: "All launch settings →" });
-  allLink.addEventListener("click", () => {
-    close();
-    window.location.hash = "#/settings";
-  });
-
-  const runNow = el("button", {
-    class: `btn btn-sm ${running ? "btn-danger" : "btn-primary"}`,
-    type: "button",
-    text: running ? "Stop" : "Run",
-  });
-  runNow.addEventListener("click", () => {
-    close();
-    if (running) void stopProcess();
-    else void startProcess();
-  });
-
-  return el("div", {}, [
-    el("div", { class: "popover-title", text: "Launch" }),
-    form,
-    el("div", { class: "popover-foot" }, [allLink, el("span", { class: "spacer" }), runNow]),
-  ]);
+function shortFailure(): string {
+  const process = state.process;
+  if (process?.failureHint) {
+    const head = process.failureHint.split(/[:.]/)[0].trim();
+    return head || "Robot unavailable";
+  }
+  if (process?.exitCode != null && process.exitCode !== 0) return `Exited (code ${process.exitCode})`;
+  return "Stopped with error";
 }
 
-export function createRunButton(): HTMLElement {
-  const label = el("span", { text: "Run" });
-  const runBtn = el("button", { class: "btn btn-primary run-btn", type: "button" }, [label]);
-  const caret = el("button", {
-    class: "run-caret",
-    type: "button",
-    "aria-haspopup": "true",
-    "aria-expanded": "false",
-    "aria-label": "Launch settings",
-    text: "▾",
-  });
-  const group = el("div", { class: "run-group" }, [runBtn, caret]);
+function phaseView(phase: AppPhase): PhaseView {
+  const pid = state.process?.pid;
+  switch (phase) {
+    case "starting":
+      return { label: "Starting…", tone: "warn", detail: "waiting for app API", action: "stop", actionLabel: "Stop", danger: true };
+    case "running":
+      return { label: "Running", tone: "ok", detail: pid ? `pid ${pid}` : undefined, action: "stop", actionLabel: "Stop", danger: true };
+    case "failed":
+      return { label: shortFailure(), tone: "err", action: "start", actionLabel: "Start local robot app", danger: false };
+    case "stopped":
+      return { label: "Stopped", tone: "idle", action: "start", actionLabel: "Start local robot app", danger: false };
+    default:
+      return { label: "Idle", tone: "idle", action: "start", actionLabel: "Start local robot app", danger: false };
+  }
+}
 
-  const popover = createPopover({ anchor: caret, align: "right", build: buildPopoverBody });
+export function createStartControl(): HTMLElement {
+  const dot = el("span", { class: "status-dot" });
+  const labelText = el("span", { class: "start-label" });
+  const detailText = el("span", { class: "start-detail" });
+  const stateBox = el("div", { class: "start-state" }, [dot, labelText, detailText]);
 
-  runBtn.addEventListener("click", () => {
-    if (state.process?.running) void stopProcess();
-    else void startProcess();
-  });
-  caret.addEventListener("click", () => popover.toggle());
+  const button = el("button", { class: "btn", type: "button" });
+  const group = el("div", { class: "start-control" }, [stateBox, button]);
+
+  let onClick: (() => void) | null = null;
+  button.addEventListener("click", () => onClick?.());
 
   function sync(): void {
-    group.hidden = !state.processAvailable;
-    const running = !!state.process?.running;
-    label.textContent = running ? "Stop" : "Run";
-    runBtn.classList.toggle("btn-primary", !running);
-    runBtn.classList.toggle("btn-danger", running);
-    caret.classList.toggle("is-running", running);
+    const phase = appPhase();
+    group.hidden = phase === "unavailable";
+    if (phase === "unavailable") return;
+    const view = phaseView(phase);
+
+    setDot(dot, view.tone);
+    stateBox.classList.toggle("is-busy", phase === "starting");
+    labelText.textContent = view.label;
+    labelText.title = state.process?.failureHint || "";
+    detailText.textContent = view.detail || "";
+    detailText.hidden = !view.detail;
+
+    button.textContent = view.actionLabel;
+    button.classList.toggle("btn-primary", view.action === "start");
+    button.classList.toggle("btn-danger", view.danger);
+    onClick = view.action === "start" ? () => void startProcess() : () => void stopProcess();
   }
 
   subscribe(sync);

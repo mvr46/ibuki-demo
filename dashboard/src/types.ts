@@ -1,19 +1,8 @@
 export type DotState = "ok" | "warn" | "err" | "idle";
+export type Tone = "ok" | "warn" | "err" | "muted";
 export type LevelFilter = "ALL" | "INFO" | "WARNING" | "ERROR";
 
 export type BackendStatus = {
-  active_backend?: string;
-  backend_provider?: string;
-  has_hf_connection?: boolean;
-  has_hf_session_url?: boolean;
-  has_hf_ws_url?: boolean;
-  hf_connection_mode?: string;
-  hf_direct_host?: string;
-  hf_direct_port?: number;
-  can_proceed?: boolean;
-  can_proceed_with_hf?: boolean;
-  can_proceed_with_local?: boolean;
-  requires_restart?: boolean;
   backend_unavailable?: boolean;
   backend_unavailable_reason?: string;
 };
@@ -97,12 +86,6 @@ export type ProcessStatus = {
   pid: number | null;
   command: string;
   defaultCommand: string;
-  defaultRobotHost: string;
-  defaultRobotPort: string;
-  defaultRobotName: string;
-  defaultHeadTracker: string;
-  defaultMediaBackend: string;
-  defaultHardwareProfile: string;
   startedAt: string | null;
   exitedAt: string | null;
   exitCode: number | null;
@@ -111,6 +94,8 @@ export type ProcessStatus = {
   backendReady?: boolean;
   failureHint?: string | null;
 };
+
+export type AppPhase = "unavailable" | "idle" | "starting" | "running" | "stopped" | "failed";
 
 export type ProfileSummary = { name: string; is_default: boolean };
 
@@ -133,23 +118,10 @@ export type ProfilePayload = {
   enabled_tools: string[];
 };
 
-export type ConnectionMode = "auto" | "localhost_only" | "network";
-export type HeadTracker = "off" | "yolo" | "mediapipe";
-export type MediaBackend = "auto" | "default" | "local" | "webrtc" | "no_media";
-export type HardwareProfile = "auto" | "mac-mini-wired" | "legacy";
-
-export type LaunchConfig = {
-  connectionMode: ConnectionMode;
-  robotHost: string;
-  robotPort: string;
-  robotName: string;
-  headTracker: HeadTracker;
-  mediaBackend: MediaBackend;
-  hardwareProfile: HardwareProfile;
+export type LaunchOptions = {
   camera: boolean;
   localVision: boolean;
   debug: boolean;
-  rawOverride: string;
 };
 
 export type ViewId = "monitor" | "logs" | "diagnostics" | "settings";

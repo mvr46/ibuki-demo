@@ -1,5 +1,4 @@
 import type {
-  BackendStatus,
   DashboardStatus,
   FaceState,
   ProcessStatus,
@@ -34,9 +33,6 @@ export const api = {
   processStart: (command: string) =>
     fetchJson<ProcessStatus>("/__dashboard/process/start", jsonBody({ command })),
   processStop: () => fetchJson<ProcessStatus>("/__dashboard/process/stop", { method: "POST" }),
-
-  backendConfig: (body: Record<string, string | number>) =>
-    fetchJson<BackendStatus>("/backend_config", jsonBody(body)),
 
   profiles: () => fetchJson<ProfileList>("/profiles"),
   profileLoad: (name: string) => {

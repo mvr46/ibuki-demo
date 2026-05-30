@@ -1,4 +1,4 @@
-import { state, logUi, onLog } from "../state.ts";
+import { state, logUi, onLog, addLocalLog } from "../state.ts";
 import { el } from "../util.ts";
 import type { LevelFilter, LogEntry, View } from "../types.ts";
 
@@ -7,9 +7,21 @@ const SCROLL_BOTTOM_THRESHOLD = 40;
 const USER_SCROLL_WINDOW_MS = 400;
 const FILTER_LABELS: Record<LevelFilter, string> = { ALL: "All", INFO: "Info", WARNING: "Warn", ERROR: "Error" };
 
+function entryLevel(entry: LogEntry): string {
+  return (entry.level || "INFO").toUpperCase();
+}
+function entryCategory(entry: LogEntry): string {
+  return (entry.category || "SYSTEM").toUpperCase();
+}
+function formatLine(entry: LogEntry): string {
+  const time = entry.createdAt ? new Date(entry.createdAt).toISOString() : "";
+  return `${time}\t${entryLevel(entry)}\t${entryCategory(entry)}\t${entry.message}`;
+}
+
 export function createLogsView(): View {
   let unsubLog: (() => void) | null = null;
   let lastUserScrollAt = 0;
+  let categorySig = "";
 
   const logSearch = el("input", { id: "log-search", type: "search", placeholder: "Filter logs...", autocomplete: "off", spellcheck: "false" });
 
@@ -26,15 +38,23 @@ export function createLogsView(): View {
   });
   const filters = el("div", { class: "log-filters", role: "tablist" }, filterTabs);
 
+  const categorySelect = el("select", { class: "log-category", "aria-label": "Category" });
+  categorySelect.addEventListener("change", () => { logUi.category = categorySelect.value; renderLogs(); });
+
   const countInfo = el("span", { class: "count count-info", text: "0" });
   const countWarn = el("span", { class: "count count-warn", text: "0" });
   const countErr = el("span", { class: "count count-err", text: "0" });
   const counts = el("div", { class: "log-counts" }, [countInfo, countWarn, countErr]);
 
+  const copyBtn = el("button", { class: "link-btn", type: "button", text: "Copy" });
+  copyBtn.addEventListener("click", () => void copyVisible());
+  const exportBtn = el("button", { class: "link-btn", type: "button", text: "Export" });
+  exportBtn.addEventListener("click", () => exportVisible());
   const clearBtn = el("button", { class: "link-btn", type: "button", text: "Clear" });
   clearBtn.addEventListener("click", () => { logUi.cleared = state.logs.length; renderLogs(); });
+  const actions = el("div", { class: "log-actions" }, [copyBtn, exportBtn, clearBtn]);
 
-  const toolbar = el("div", { class: "log-toolbar" }, [logSearch, filters, counts, clearBtn]);
+  const toolbar = el("div", { class: "log-toolbar" }, [logSearch, filters, categorySelect, counts, actions]);
 
   const logsList = el("ol", { id: "logs" });
   const jumpCount = el("span", { text: "0" });
@@ -62,12 +82,24 @@ export function createLogsView(): View {
     else if (!atBottom && logUi.autoScroll) { logUi.autoScroll = false; updateJumpLatest(); }
   });
 
-  function entryLevel(entry: LogEntry): string {
-    return (entry.level || "INFO").toUpperCase();
+  function refreshCategories(): void {
+    const seen = new Set<string>();
+    for (let i = logUi.cleared; i < state.logs.length; i += 1) seen.add(entryCategory(state.logs[i]));
+    const cats = [...seen].sort();
+    const sig = cats.join(",");
+    if (sig === categorySig) return;
+    categorySig = sig;
+    if (logUi.category !== "ALL" && !seen.has(logUi.category)) logUi.category = "ALL";
+    categorySelect.replaceChildren(
+      el("option", { value: "ALL", text: "All categories" }),
+      ...cats.map((cat) => el("option", { value: cat, text: cat.charAt(0) + cat.slice(1).toLowerCase() })),
+    );
+    categorySelect.value = logUi.category;
   }
   function entryPasses(entry: LogEntry): boolean {
     const search = logUi.search.trim().toLowerCase();
     if (logUi.filter !== "ALL" && entryLevel(entry) !== logUi.filter) return false;
+    if (logUi.category !== "ALL" && entryCategory(entry) !== logUi.category) return false;
     if (search && !entry.message.toLowerCase().includes(search)) return false;
     return true;
   }
@@ -80,7 +112,7 @@ export function createLogsView(): View {
   }
   function renderLog(entry: LogEntry): HTMLLIElement {
     const level = entryLevel(entry);
-    const category = (entry.category || "SYSTEM").toUpperCase();
+    const category = entryCategory(entry);
     const item = el("li", {}, [
       el("time", { text: entry.createdAt ? new Date(entry.createdAt).toLocaleTimeString() : "" }),
       el("span", { class: `cat cat--${category.toLowerCase()}`, text: category }),
@@ -129,6 +161,7 @@ export function createLogsView(): View {
     }
   }
   function renderLogs(): void {
+    refreshCategories();
     updateCounts();
     const items = visibleLogs().slice(-MAX_VISIBLE_LOGS);
     if (!items.length) showEmpty();
@@ -147,11 +180,34 @@ export function createLogsView(): View {
     while (logsList.childElementCount > MAX_VISIBLE_LOGS) logsList.removeChild(logsList.firstElementChild!);
   }
   function onNewLog(entry: LogEntry): void {
+    refreshCategories();
     updateCounts();
     appendToDom(entry);
     if (logUi.autoScroll) scrollToBottom();
     else if (entryPasses(entry)) logUi.newSincePaused += 1;
     updateJumpLatest();
+  }
+
+  async function copyVisible(): Promise<void> {
+    const text = visibleLogs().map(formatLine).join("\n");
+    if (!text) return;
+    try {
+      await navigator.clipboard?.writeText(text);
+      copyBtn.textContent = "Copied";
+      window.setTimeout(() => (copyBtn.textContent = "Copy"), 1200);
+    } catch {
+      addLocalLog("Clipboard unavailable; use Export instead.", "WARNING");
+    }
+  }
+  function exportVisible(): void {
+    const text = visibleLogs().map(formatLine).join("\n");
+    if (!text) return;
+    const blob = new Blob([`${text}\n`], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const anchor = el("a", { href: url, download: `reachy-logs-${stamp}.log` });
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   return {

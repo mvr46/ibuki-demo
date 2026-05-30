@@ -1,19 +1,11 @@
 import { api } from "./api.ts";
-import type { DashboardStatus, FaceBox, LaunchConfig, LevelFilter, LogEntry, ProcessStatus, ViewId } from "./types.ts";
+import type { AppPhase, DashboardStatus, FaceBox, LaunchOptions, LevelFilter, LogEntry, ProcessStatus, ViewId } from "./types.ts";
 
-export function defaultLaunchConfig(): LaunchConfig {
+export function defaultLaunchOptions(): LaunchOptions {
   return {
-    connectionMode: "network",
-    robotHost: "",
-    robotPort: "",
-    robotName: "",
-    headTracker: "off",
-    mediaBackend: "webrtc",
-    hardwareProfile: "mac-mini-wired",
     camera: true,
     localVision: false,
     debug: false,
-    rawOverride: "",
   };
 }
 
@@ -21,18 +13,28 @@ export const state = {
   status: null as DashboardStatus | null,
   process: null as ProcessStatus | null,
   processAvailable: false,
-  defaultsSeeded: false,
   faces: [] as FaceBox[],
   faceStateAvailable: false,
   faceRecognitionAvailable: false,
   selectedFaceId: null as number | null,
   logs: [] as LogEntry[],
-  launchConfig: defaultLaunchConfig(),
+  launchOptions: defaultLaunchOptions(),
   activeView: "monitor" as ViewId,
 };
 
+export function appPhase(): AppPhase {
+  const process = state.process;
+  if (!state.processAvailable || !process) return "unavailable";
+  if (process.running) return process.backendReady === false ? "starting" : "running";
+  if (process.failureHint) return "failed";
+  if (process.exitCode !== null && process.exitCode !== 0) return "failed";
+  if (process.signal || process.exitCode === 0) return "stopped";
+  return "idle";
+}
+
 export const logUi = {
   filter: "ALL" as LevelFilter,
+  category: "ALL",
   search: "",
   autoScroll: true,
   newSincePaused: 0,
