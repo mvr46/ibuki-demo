@@ -31,6 +31,10 @@ from reachy_mini_conversation_app.backends.local_llm import (
 from reachy_mini_conversation_app.backends.local_stt import LocalSTTAdapter, MLXWhisperSTTAdapter
 from reachy_mini_conversation_app.backends.local_tts import LocalTTSAdapter, PiperTTSAdapter
 from reachy_mini_conversation_app.tools.tool_constants import SystemTool
+from reachy_mini_conversation_app.backends.local_model_servers import (
+    LocalModelServerManager,
+    create_local_model_server_manager,
+)
 from reachy_mini_conversation_app.backends.local_turn_detector import (
     LocalRejectedTurn,
     LocalTurnDetector,
@@ -64,6 +68,7 @@ class LocalConversationHandler(ConversationHandler):
         llm_adapter: LocalLLMAdapter | None = None,
         tts_adapter: LocalTTSAdapter | None = None,
         tool_router: LocalToolRouter | None = None,
+        model_server_manager: LocalModelServerManager | None = None,
         turn_detector: LocalTurnDetector | None = None,
         silence_seconds: float | None = None,
         min_speech_seconds: float = 0.35,
@@ -83,6 +88,7 @@ class LocalConversationHandler(ConversationHandler):
         diagnostics = getattr(deps, "performance_diagnostics", None)
         self.llm_adapter = llm_adapter or create_local_llm_adapter(diagnostics=diagnostics)
         self.tool_router = tool_router or create_local_tool_router(diagnostics=diagnostics)
+        self.model_server_manager = model_server_manager or create_local_model_server_manager()
         self.tts_adapter = tts_adapter or PiperTTSAdapter()
         self.turn_detector = turn_detector or LocalTurnDetector(
             LocalTurnDetectorConfig(
@@ -116,6 +122,7 @@ class LocalConversationHandler(ConversationHandler):
             llm_adapter=self.llm_adapter,
             tts_adapter=self.tts_adapter,
             tool_router=self.tool_router,
+            model_server_manager=self.model_server_manager,
             turn_detector=LocalTurnDetector(self.turn_detector.config),
             silence_seconds=self._silence_seconds,
             min_speech_seconds=self._min_speech_seconds,
@@ -125,6 +132,7 @@ class LocalConversationHandler(ConversationHandler):
     async def start_up(self) -> None:
         """Prepare local conversation state."""
         logger.info("Local conversation backend ready.")
+        await self.model_server_manager.start_up()
         self.tool_manager.start_up(tool_callbacks=[self._handle_tool_notification])
         asyncio.create_task(self._warm_local_components(), name="local-component-warmup")
 
@@ -169,6 +177,7 @@ class LocalConversationHandler(ConversationHandler):
             except asyncio.CancelledError:
                 pass
         await self.tool_manager.shutdown()
+        await self.model_server_manager.shutdown()
         while not self.output_queue.empty():
             try:
                 self.output_queue.get_nowait()

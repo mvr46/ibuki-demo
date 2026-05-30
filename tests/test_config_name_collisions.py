@@ -50,11 +50,17 @@ def test_refresh_runtime_config_reloads_hf_runtime_fields(monkeypatch: pytest.Mo
     """Instance-local .env reloads should update every env-backed Hugging Face runtime field."""
     monkeypatch.setenv("HF_TOKEN", "hf-runtime-token")
     monkeypatch.setenv("HF_HOME", "/tmp/reachy-hf-cache")
+    monkeypatch.setenv("LOCAL_MODEL_SERVER_AUTOSTART", "0")
+    monkeypatch.setenv("LOCAL_MODEL_SERVER_START_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("LOCAL_LLAMA_SERVER_BIN", "/tmp/llama-server")
+    monkeypatch.setenv("LOCAL_CHAT_SERVER_HF", "test/chat:Q4")
     monkeypatch.setenv("LOCAL_VISION_MODEL", "test/local-vision-model")
+    monkeypatch.setenv("LOCAL_VISION_SERVER_HF", "test/vision:Q8")
     monkeypatch.setenv("LOCAL_VISION_BASE_URL", "http://vision.test/v1")
     monkeypatch.setenv("LOCAL_VISION_SERVER_MODEL", "test/server-vision-model")
     monkeypatch.setenv("LOCAL_VISION_NUM_PREDICT", "24")
     monkeypatch.setenv("LOCAL_VISION_MAX_IMAGE_SIDE", "256")
+    monkeypatch.setenv("LOCAL_ROUTER_SERVER_HF", "test/router:Q8")
     monkeypatch.setenv("LOCAL_ROUTER_BASE_URL", "http://router.test/v1")
     monkeypatch.setenv("LOCAL_ROUTER_MODEL", "test/router-model")
     monkeypatch.setenv("LOCAL_ROUTER_NUM_CTX", "384")
@@ -76,11 +82,17 @@ def test_refresh_runtime_config_reloads_hf_runtime_fields(monkeypatch: pytest.Mo
 
     assert config_mod.config.HF_TOKEN == "hf-runtime-token"
     assert config_mod.config.HF_HOME == "/tmp/reachy-hf-cache"
+    assert config_mod.config.LOCAL_MODEL_SERVER_AUTOSTART is False
+    assert config_mod.config.LOCAL_MODEL_SERVER_START_TIMEOUT_SECONDS == 12.5
+    assert config_mod.config.LOCAL_LLAMA_SERVER_BIN == "/tmp/llama-server"
+    assert config_mod.config.LOCAL_CHAT_SERVER_HF == "test/chat:Q4"
     assert config_mod.config.LOCAL_VISION_MODEL == "test/local-vision-model"
+    assert config_mod.config.LOCAL_VISION_SERVER_HF == "test/vision:Q8"
     assert config_mod.config.LOCAL_VISION_BASE_URL == "http://vision.test/v1"
     assert config_mod.config.LOCAL_VISION_SERVER_MODEL == "test/server-vision-model"
     assert config_mod.config.LOCAL_VISION_NUM_PREDICT == 24
     assert config_mod.config.LOCAL_VISION_MAX_IMAGE_SIDE == 256
+    assert config_mod.config.LOCAL_ROUTER_SERVER_HF == "test/router:Q8"
     assert config_mod.config.LOCAL_ROUTER_BASE_URL == "http://router.test/v1"
     assert config_mod.config.LOCAL_ROUTER_MODEL == "test/router-model"
     assert config_mod.config.LOCAL_ROUTER_NUM_CTX == 384
@@ -90,13 +102,19 @@ def test_refresh_runtime_config_reloads_hf_runtime_fields(monkeypatch: pytest.Mo
 def test_local_latency_defaults_refresh_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Local latency knobs should have first-audio optimized defaults."""
     for name in (
+        "LOCAL_MODEL_SERVER_AUTOSTART",
+        "LOCAL_MODEL_SERVER_START_TIMEOUT_SECONDS",
+        "LOCAL_LLAMA_SERVER_BIN",
+        "LOCAL_CHAT_SERVER_HF",
         "LOCAL_CHAT_BASE_URL",
         "LOCAL_CHAT_MODEL",
+        "LOCAL_ROUTER_SERVER_HF",
         "LOCAL_ROUTER_BASE_URL",
         "LOCAL_ROUTER_MODEL",
         "LOCAL_ROUTER_NUM_CTX",
         "LOCAL_ROUTER_NUM_PREDICT",
         "LOCAL_VAD_SILENCE_SECONDS",
+        "LOCAL_VISION_SERVER_HF",
         "LOCAL_VISION_BASE_URL",
         "LOCAL_VISION_SERVER_MODEL",
         "LOCAL_VISION_NUM_PREDICT",
@@ -106,13 +124,19 @@ def test_local_latency_defaults_refresh_from_env(monkeypatch: pytest.MonkeyPatch
 
     config_mod.refresh_runtime_config_from_env()
 
+    assert config_mod.config.LOCAL_MODEL_SERVER_AUTOSTART is True
+    assert config_mod.config.LOCAL_MODEL_SERVER_START_TIMEOUT_SECONDS == 240.0
+    assert config_mod.config.LOCAL_LLAMA_SERVER_BIN == "llama-server"
+    assert config_mod.config.LOCAL_CHAT_SERVER_HF == config_mod.DEFAULT_LOCAL_CHAT_SERVER_HF
     assert config_mod.config.LOCAL_CHAT_BASE_URL == "http://127.0.0.1:8080/v1"
     assert config_mod.config.LOCAL_CHAT_MODEL == config_mod.DEFAULT_LOCAL_CHAT_SERVER_MODEL
+    assert config_mod.config.LOCAL_ROUTER_SERVER_HF == config_mod.DEFAULT_LOCAL_ROUTER_SERVER_HF
     assert config_mod.config.LOCAL_ROUTER_BASE_URL == "http://127.0.0.1:8082/v1"
     assert config_mod.config.LOCAL_ROUTER_MODEL == config_mod.DEFAULT_LOCAL_ROUTER_SERVER_MODEL
     assert config_mod.config.LOCAL_ROUTER_NUM_CTX == 448
     assert config_mod.config.LOCAL_ROUTER_NUM_PREDICT == 18
     assert config_mod.config.LOCAL_VAD_SILENCE_SECONDS == 0.45
+    assert config_mod.config.LOCAL_VISION_SERVER_HF == config_mod.DEFAULT_LOCAL_VISION_SERVER_HF
     assert config_mod.config.LOCAL_VISION_BASE_URL == "http://127.0.0.1:8081/v1"
     assert config_mod.config.LOCAL_VISION_SERVER_MODEL == config_mod.DEFAULT_LOCAL_VISION_SERVER_MODEL
     assert config_mod.config.LOCAL_VISION_NUM_PREDICT == 48

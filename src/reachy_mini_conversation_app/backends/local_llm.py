@@ -461,12 +461,14 @@ def _parse_router_content(
     if "|" not in text and _clean_router_label(text).startswith("none"):
         return _RouterCalls([])
     if "|" not in text:
-        return _RouterCalls([], parse_error=True)
-    label, arg = text.split("|", 1)
-    label = _clean_router_label(label)
-    arg = _clean_router_arg(arg)
-    if label == "none":
-        return _RouterCalls([])
+        label = _clean_router_label(text)
+        arg = ""
+    else:
+        label, arg = text.split("|", 1)
+        label = _clean_router_label(label)
+        arg = _clean_router_arg(arg)
+        if label == "none":
+            return _RouterCalls([])
 
     active_tools = {str(tool.get("name") or ""): tool for tool in tools or [] if isinstance(tool.get("name"), str)}
     if active_tools and label not in active_tools:
@@ -474,7 +476,7 @@ def _parse_router_content(
 
     arguments = _router_arguments_for(label, arg, user_text, active_tools.get(label))
     if arguments is None:
-        return _RouterCalls([], ignored_tool_name=label or None)
+        return _RouterCalls([], parse_error="|" not in text, ignored_tool_name=label or None)
     return _RouterCalls([{"name": label, "arguments": arguments}])
 
 

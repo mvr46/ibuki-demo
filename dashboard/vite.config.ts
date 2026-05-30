@@ -298,7 +298,7 @@ function dashboardProcessPlugin(): Plugin {
       exitCode,
       signal,
       backendTarget,
-      backendReady: await isBackendReady(),
+      backendReady: isRunning() ? await isBackendReady() : false,
       failureHint,
     };
   }

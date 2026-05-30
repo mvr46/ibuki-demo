@@ -171,6 +171,18 @@ def test_qwen_router_parser_accepts_loose_none_text() -> None:
     assert parsed.parse_error is False
 
 
+def test_qwen_router_parser_accepts_bare_valid_tool_label() -> None:
+    """Small completion routers sometimes omit the pipe for no-argument tools."""
+    parsed = _parse_router_content(
+        " who_am_i",
+        user_text="who am I?",
+        tools=[{"type": "function", "name": "who_am_i", "description": "Identify user", "parameters": {}}],
+    )
+
+    assert parsed == [{"name": "who_am_i", "arguments": {}}]
+    assert parsed.parse_error is False
+
+
 def test_qwen_router_parser_maps_camera_arg() -> None:
     """Router parser should map camera args into the existing tool schema."""
     parsed = _parse_router_content("camera|what do you see?", user_text="what do you see?")
